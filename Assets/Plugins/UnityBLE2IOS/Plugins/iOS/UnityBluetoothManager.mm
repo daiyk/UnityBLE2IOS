@@ -148,13 +148,38 @@
     // Store the discovered peripheral
     self.discoveredPeripherals[deviceId] = peripheral;
     
+        // Extract additional identifying information from advertisement
+    NSString *localName = advertisementData[CBAdvertisementDataLocalNameKey] ?: @"";
+    NSArray *serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] ?: @[];
+    NSData *manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey];
+    NSNumber *txPowerLevel = advertisementData[CBAdvertisementDataTxPowerLevelKey];
+
+    // convert service UUIDs to string array safely
+    NSMutableArray *serviceUUIDStrings = [NSMutableArray array];
+    if(serviceUUIDs){
+        for (CBUUID *uuid in serviceUUIDs) {
+            [serviceUUIDStrings addObject:uuid.UUIDString];
+        }
+    }
+
+    // convert manufacturer data to Hex string if available
+    if(manufacturerData && manufacturerData.length > 0) {
+        const unsigned char *dataBytes = [manufacturerData bytes];
+        NSMutableString *hexString = [NSMutableString stringWithCapacity:manufacturerData.length * 2];
+        for (NSInteger i = 0; i < manufacturerData.length; i++) {
+            [hexString appendFormat:@"%02x", dataBytes[i]];
+        }
+        manufactureData=[hexString copy];
+    }
+
     // Create device info JSON
     NSDictionary *deviceInfo = @{
         @"deviceId": deviceId,
         @"name": deviceName,
         @"rssi": RSSI,
         @"isConnectable": @YES,
-        @"serviceUUIDs": @[]
+        @"serviceUUIDs": serviceUUIDStrings,
+        @"manufactureData": manufactureData
     };
     
     NSError *error;
