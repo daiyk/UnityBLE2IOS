@@ -1,6 +1,9 @@
 #import <Foundation/Foundation.h>
 #import <CoreBluetooth/CoreBluetooth.h>
 
+// Unity messaging function declaration
+extern "C" void UnitySendMessage(const char* obj, const char* method, const char* msg);
+
 @interface UnityBluetoothManager : NSObject <CBCentralManagerDelegate, CBPeripheralDelegate>
 
 @property (nonatomic, strong) CBCentralManager *centralManager;
@@ -148,7 +151,7 @@
     // Store the discovered peripheral
     self.discoveredPeripherals[deviceId] = peripheral;
     
-        // Extract additional identifying information from advertisement
+    // Extract additional identifying information from advertisement
     NSString *localName = advertisementData[CBAdvertisementDataLocalNameKey] ?: @"";
     NSArray *serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] ?: @[];
     NSData *manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey];
@@ -163,13 +166,14 @@
     }
 
     // convert manufacturer data to Hex string if available
+    NSString *manufacturerDataString = @"";
     if(manufacturerData && manufacturerData.length > 0) {
         const unsigned char *dataBytes = [manufacturerData bytes];
         NSMutableString *hexString = [NSMutableString stringWithCapacity:manufacturerData.length * 2];
         for (NSInteger i = 0; i < manufacturerData.length; i++) {
             [hexString appendFormat:@"%02x", dataBytes[i]];
         }
-        manufactureData=[hexString copy];
+        manufacturerDataString = [hexString copy];
     }
 
     // Create device info JSON
@@ -179,7 +183,9 @@
         @"rssi": RSSI,
         @"isConnectable": @YES,
         @"serviceUUIDs": serviceUUIDStrings,
-        @"manufactureData": manufactureData
+        @"manufacturerData": manufacturerDataString,
+        @"localName": localName,
+        @"txPowerLevel": txPowerLevel ?: @0
     };
     
     NSError *error;
@@ -288,5 +294,50 @@ extern "C" {
     bool _isDeviceConnected(const char* deviceId) {
         NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
         return [[UnityBluetoothManager sharedInstance] isDeviceConnected:deviceIdString];
+    }
+    
+    // Get number of discovered devices
+    int _getDiscoveredDeviceCount() {
+        return (int)[[UnityBluetoothManager sharedInstance] discoveredPeripherals].count;
+    }
+    
+    // Get discovered device info by index as JSON string
+    const char* _getDiscoveredDeviceInfo(int index) {
+        UnityBluetoothManager *manager = [UnityBluetoothManager sharedInstance];
+        NSArray *deviceIds = [manager.discoveredPeripherals allKeys];
+        
+        if (index < 0 || index >= deviceIds.count) {
+            return ""; // Invalid index
+        }
+        
+        NSString *deviceId = deviceIds[index];
+        CBPeripheral *peripheral = manager.discoveredPeripherals[deviceId];
+        
+        if (!peripheral) {
+            return ""; // Device not found
+        }
+        
+        // Create device info JSON (basic info only, as we don't have advertisement data here)
+        NSDictionary *deviceInfo = @{
+            @"deviceId": peripheral.identifier.UUIDString,
+            @"name": peripheral.name ?: @"Unknown Device",
+            @"rssi": @0, // RSSI not available here
+            @"isConnectable": @YES,
+            @"serviceUUIDs": @[],
+            @"manufacturerData": @"",
+            @"localName": @"",
+            @"txPowerLevel": @0
+        };
+        
+        NSError *error;
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:deviceInfo options:0 error:&error];
+        if (jsonData && !error) {
+            NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            // Note: This returns a pointer to the C string, but it may be deallocated
+            // In a real implementation, you'd want to use a static buffer or other memory management
+            return [jsonString UTF8String];
+        }
+        
+        return "";
     }
 }

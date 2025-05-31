@@ -55,6 +55,12 @@ namespace UnityBLE2IOS
         
         [DllImport("__Internal")]
         private static extern bool _isDeviceConnected(string deviceId);
+        
+        [DllImport("__Internal")]
+        private static extern int _getDiscoveredDeviceCount();
+        
+        [DllImport("__Internal")]
+        private static extern string _getDiscoveredDeviceInfo(int index);
 #endif
 
         private List<BluetoothDevice> discoveredDevices = new List<BluetoothDevice>();
@@ -191,6 +197,50 @@ namespace UnityBLE2IOS
         public List<BluetoothDevice> GetDiscoveredDevices()
         {
             return new List<BluetoothDevice>(discoveredDevices);
+        }
+
+        /// <summary>
+        /// Get count of discovered devices from native layer
+        /// </summary>
+        /// <returns>Number of discovered devices</returns>
+        public int GetDiscoveredDeviceCount()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            return _getDiscoveredDeviceCount();
+#else
+            return discoveredDevices.Count;
+#endif
+        }
+
+        /// <summary>
+        /// Get discovered device info by index from native layer
+        /// </summary>
+        /// <param name="index">Index of the device</param>
+        /// <returns>BluetoothDevice object or null if not found</returns>
+        public BluetoothDevice GetDiscoveredDeviceByIndex(int index)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            string deviceInfo = _getDiscoveredDeviceInfo(index);
+            if (!string.IsNullOrEmpty(deviceInfo))
+            {
+                try
+                {
+                    return JsonUtility.FromJson<BluetoothDevice>(deviceInfo);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"Error parsing device info at index {index}: {e.Message}");
+                    return null;
+                }
+            }
+            return null;
+#else
+            if (index >= 0 && index < discoveredDevices.Count)
+            {
+                return discoveredDevices[index];
+            }
+            return null;
+#endif
         }
 
         // Called from native iOS code
