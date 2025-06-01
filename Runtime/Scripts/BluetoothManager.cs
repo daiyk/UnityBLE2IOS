@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using System.Runtime.InteropServices;
 
@@ -64,6 +65,7 @@ namespace UnityBLE2IOS
 #endif
 
         private List<BluetoothDevice> discoveredDevices = new List<BluetoothDevice>();
+        private Dictionary<string, BluetoothDevice> connectedDevices = new Dictionary<string, BluetoothDevice>();
         private bool isInitialized = false;
 
         private void Awake()
@@ -200,6 +202,63 @@ namespace UnityBLE2IOS
         }
 
         /// <summary>
+        /// Clear all discovered devices
+        /// </summary>
+        public void ClearDiscoveredDevices()
+        {
+            discoveredDevices.Clear();
+            Debug.Log("Cleared discovered devices list");
+        }
+
+        /// <summary>
+        /// Get a discovered device by its ID
+        /// </summary>
+        /// <param name="deviceId">The device ID to look for</param>
+        /// <returns>BluetoothDevice object or null if not found</returns>
+        public BluetoothDevice GetDiscoveredDevice(string deviceId)
+        {
+            return discoveredDevices.Find(d => d.deviceId == deviceId);
+        }
+
+        /// <summary>
+        /// Check if a device has been discovered
+        /// </summary>
+        /// <param name="deviceId">The device ID to check</param>
+        /// <returns>True if the device has been discovered</returns>
+        public bool IsDeviceDiscovered(string deviceId)
+        {
+            return discoveredDevices.Any(d => d.deviceId == deviceId);
+        }
+
+        /// <summary>
+        /// Get list of connected devices
+        /// </summary>
+        /// <returns>List of connected Bluetooth devices</returns>
+        public List<BluetoothDevice> GetConnectedDevices()
+        {
+            return new List<BluetoothDevice>(connectedDevices.Values);
+        }
+
+        /// <summary>
+        /// Get a connected device by its ID
+        /// </summary>
+        /// <param name="deviceId">The device ID to look for</param>
+        /// <returns>BluetoothDevice object or null if not found</returns>
+        public BluetoothDevice GetConnectedDevice(string deviceId)
+        {
+            return connectedDevices.TryGetValue(deviceId, out BluetoothDevice device) ? device : null;
+        }
+
+        /// <summary>
+        /// Get count of connected devices
+        /// </summary>
+        /// <returns>Number of connected devices</returns>
+        public int GetConnectedDeviceCount()
+        {
+            return connectedDevices.Count;
+        }
+
+        /// <summary>
         /// Get count of discovered devices from native layer
         /// </summary>
         /// <returns>Number of discovered devices</returns>
@@ -243,6 +302,42 @@ namespace UnityBLE2IOS
 #endif
         }
 
+        /// <summary>
+        /// Get a summary of current connection status
+        /// </summary>
+        /// <returns>String containing connection status information</returns>
+        public string GetConnectionStatus()
+        {
+            var status = new System.Text.StringBuilder();
+            status.AppendLine($"Bluetooth Enabled: {IsBluetoothEnabled()}");
+            status.AppendLine($"Discovered Devices: {discoveredDevices.Count}");
+            status.AppendLine($"Connected Devi ces: {connectedDevices.Count}");
+            
+            if (connectedDevices.Count > 0)
+            {
+                status.AppendLine("Connected devices:");
+                foreach (var device in connectedDevices.Values)
+                {
+                    status.AppendLine($"  - {device.name} ({device.deviceId})");
+                }
+            }
+            
+            return status.ToString();
+        }
+
+        /// <summary>
+        /// Disconnect all connected devices
+        /// </summary>
+        public void DisconnectAllDevices()
+        {
+            var deviceIds = new List<string>(connectedDevices.Keys);
+            foreach (string deviceId in deviceIds)
+            {
+                DisconnectDevice(deviceId);
+            }
+            Debug.Log($"Initiated disconnection for {deviceIds.Count} devices");
+        }
+
         // Called from native iOS code
         public void OnBluetoothStateChangedNative(string enabled)
         {
@@ -257,13 +352,31 @@ namespace UnityBLE2IOS
             try
             {
                 BluetoothDevice device = JsonUtility.FromJson<BluetoothDevice>(deviceInfo);
-                discoveredDevices.Add(device);
-                Debug.Log($"Device discovered: {device.name} ({device.deviceId})");
+                
+                // Check if device already exists to avoid duplicates
+                BluetoothDevice existingDevice = discoveredDevices.Find(d => d.deviceId == device.deviceId);
+                if (existingDevice != null)
+                {
+                    // Update existing device with new info (RSSI might have changed)
+                    existingDevice.rssi = device.rssi;
+                    existingDevice.serviceUUIDs = device.serviceUUIDs;
+                    existingDevice.manufacturerData = device.manufacturerData;
+                    existingDevice.localName = device.localName;
+                    existingDevice.txPowerLevel = device.txPowerLevel;
+                    Debug.Log($"Updated device: {device.name} ({device.deviceId}) RSSI: {device.rssi}");
+                }
+                else
+                {
+                    // Add new device
+                    discoveredDevices.Add(device);
+                    Debug.Log($"New device discovered: {device.name} ({device.deviceId}) RSSI: {device.rssi}");
+                }
+                
                 OnDeviceDiscovered?.Invoke(device);
             }
             catch (Exception e)
             {
-                Debug.LogError($"Error parsing device info: {e.Message}");
+                Debug.LogError($"Error parsing device info: {e.Message}\nDevice info: {deviceInfo}");
             }
         }
 
@@ -271,6 +384,40 @@ namespace UnityBLE2IOS
         public void OnDeviceConnectedNative(string deviceId)
         {
             Debug.Log($"Device connected: {deviceId}");
+            
+            // Find the device in discovered devices to store its full info
+            BluetoothDevice connectedDevice = discoveredDevices.Find(d => d.deviceId == deviceId);
+            
+            // If not found in discovered devices, try to get it from native layer
+            if (connectedDevice == null)
+            {
+                // Try to find it by searching through discovered devices from native layer
+                int deviceCount = GetDiscoveredDeviceCount();
+                for (int i = 0; i < deviceCount; i++)
+                {
+                    BluetoothDevice device = GetDiscoveredDeviceByIndex(i);
+                    if (device != null && device.deviceId == deviceId)
+                    {
+                        connectedDevice = device;
+                        break;
+                    }
+                }
+            }
+            
+            // If still not found, create a minimal device object
+            if (connectedDevice == null)
+            {
+                connectedDevice = new BluetoothDevice
+                {
+                    deviceId = deviceId,
+                    name = "Unknown Device",
+                    rssi = 0
+                };
+            }
+            
+            // Store the connected device
+            connectedDevices[deviceId] = connectedDevice;
+            
             OnDeviceConnected?.Invoke(deviceId);
         }
 
@@ -278,6 +425,14 @@ namespace UnityBLE2IOS
         public void OnDeviceDisconnectedNative(string deviceId)
         {
             Debug.Log($"Device disconnected: {deviceId}");
+            
+            // Remove the device from connected devices
+            if (connectedDevices.ContainsKey(deviceId))
+            {
+                connectedDevices.Remove(deviceId);
+                Debug.Log($"Removed device {deviceId} from connected devices list");
+            }
+            
             OnDeviceDisconnected?.Invoke(deviceId);
         }
 
@@ -303,14 +458,54 @@ namespace UnityBLE2IOS
         // Simulate device discovery for testing in editor
         private void SimulateDeviceDiscovery()
         {
-            BluetoothDevice simulatedDevice = new BluetoothDevice
+            // Simulate discovering multiple devices with different characteristics
+            var simulatedDevices = new List<BluetoothDevice>
             {
-                deviceId = "simulated-device-001",
-                name = "Simulated BLE Device",
-                rssi = -45
+                new BluetoothDevice
+                {
+                    deviceId = "simulated-device-001",
+                    name = "Fitness Tracker",
+                    rssi = -45,
+                    serviceUUIDs = new string[] { "180D", "180F" }, // Heart Rate & Battery Service
+                    manufacturerData = "4c001005071c123456",
+                    localName = "FitTracker Pro",
+                    txPowerLevel = 4
+                },
+                new BluetoothDevice
+                {
+                    deviceId = "simulated-device-002", 
+                    name = "Smart Watch",
+                    rssi = -62,
+                    serviceUUIDs = new string[] { "1800", "1801", "180F" },
+                    manufacturerData = "4c00100507ab654321",
+                    localName = "SmartWatch X1",
+                    txPowerLevel = 0
+                },
+                new BluetoothDevice
+                {
+                    deviceId = "simulated-device-003",
+                    name = "Temperature Sensor",
+                    rssi = -38,
+                    serviceUUIDs = new string[] { "181A" }, // Environmental Sensing
+                    manufacturerData = "",
+                    localName = "TempSense v2",
+                    txPowerLevel = -4
+                }
             };
-            discoveredDevices.Add(simulatedDevice);
-            OnDeviceDiscovered?.Invoke(simulatedDevice);
+
+            // Simulate devices being discovered over time
+            StartCoroutine(SimulateDiscoveryCoroutine(simulatedDevices));
+        }
+
+        private System.Collections.IEnumerator SimulateDiscoveryCoroutine(List<BluetoothDevice> devices)
+        {
+            foreach (var device in devices)
+            {
+                yield return new WaitForSeconds(UnityEngine.Random.Range(0.5f, 2.0f));
+                discoveredDevices.Add(device);
+                OnDeviceDiscovered?.Invoke(device);
+                Debug.Log($"Simulated device discovered: {device.name} ({device.deviceId})");
+            }
         }
 #endif
     }

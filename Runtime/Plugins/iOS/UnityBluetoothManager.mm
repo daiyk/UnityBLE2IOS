@@ -9,6 +9,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 @property (nonatomic, strong) CBCentralManager *centralManager;
 @property (nonatomic, strong) NSMutableDictionary *discoveredPeripherals;
 @property (nonatomic, strong) NSMutableDictionary *connectedPeripherals;
+@property (nonatomic, strong) NSMutableDictionary *cachedAdvertisementData;
 @property (nonatomic, assign) BOOL isScanning;
 
 + (instancetype)sharedInstance;
@@ -39,6 +40,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     if (self) {
         self.discoveredPeripherals = [[NSMutableDictionary alloc] init];
         self.connectedPeripherals = [[NSMutableDictionary alloc] init];
+        self.cachedAdvertisementData = [[NSMutableDictionary alloc] init];
         self.isScanning = NO;
     }
     return self;
@@ -70,15 +72,17 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 - (void)startScanning {
     NSLog(@"Starting BLE scan...");
     if (self.centralManager.state != CBManagerStatePoweredOn) {
-        NSLog(@"Bluetooth is not powered on");
+        NSLog(@"Bluetooth is not powered on. Current state: %ld", (long)self.centralManager.state);
         return;
     }
     
     if (self.isScanning) {
+        NSLog(@"Already scanning, stopping current scan first");
         [self stopScanning];
     }
     
     [self.discoveredPeripherals removeAllObjects];
+    [self.cachedAdvertisementData removeAllObjects];
     
     // Scan for all peripherals
     NSDictionary *scanOptions = @{
@@ -87,7 +91,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     
     [self.centralManager scanForPeripheralsWithServices:nil options:scanOptions];
     self.isScanning = YES;
-    NSLog(@"BLE scan started");
+    NSLog(@"BLE scan started successfully");
 }
 
 - (void)stopScanning {
@@ -148,6 +152,12 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     NSString *deviceId = peripheral.identifier.UUIDString;
     NSString *deviceName = peripheral.name ?: @"Unknown Device";
     
+    // Skip devices with very weak signal (optional filtering)
+    if ([RSSI intValue] < -90) {
+        NSLog(@"Skipping device with weak signal: %@ (RSSI: %@)", deviceName, RSSI);
+        return;
+    }
+    
     // Store the discovered peripheral
     self.discoveredPeripherals[deviceId] = peripheral;
     
@@ -188,12 +198,17 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
         @"txPowerLevel": txPowerLevel ?: @0
     };
     
+    // Cache the complete device info for later retrieval
+    self.cachedAdvertisementData[deviceId] = deviceInfo;
+    
     NSError *error;
     NSData *jsonData = [NSJSONSerialization dataWithJSONObject:deviceInfo options:0 error:&error];
     if (jsonData && !error) {
         NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
         UnitySendMessage("BluetoothManager", "OnDeviceDiscoveredNative", [jsonString UTF8String]);
         NSLog(@"Discovered device: %@ (%@) RSSI: %@", deviceName, deviceId, RSSI);
+    } else {
+        NSLog(@"Error creating JSON for device: %@", error.localizedDescription);
     }
 }
 
@@ -303,41 +318,56 @@ extern "C" {
     
     // Get discovered device info by index as JSON string
     const char* _getDiscoveredDeviceInfo(int index) {
+        static char buffer[2048]; // Static buffer for safe string return
+        buffer[0] = '\0'; // Initialize as empty string
+        
         UnityBluetoothManager *manager = [UnityBluetoothManager sharedInstance];
         NSArray *deviceIds = [manager.discoveredPeripherals allKeys];
         
         if (index < 0 || index >= deviceIds.count) {
-            return ""; // Invalid index
+            return buffer; // Return empty string for invalid index
         }
         
         NSString *deviceId = deviceIds[index];
+        
+        // Try to get cached advertisement data first
+        NSDictionary *cachedDeviceInfo = manager.cachedAdvertisementData[deviceId];
+        if (cachedDeviceInfo) {
+            NSError *error;
+            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:cachedDeviceInfo options:0 error:&error];
+            if (jsonData && !error) {
+                NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+                if (jsonString.length < sizeof(buffer)) {
+                    strcpy(buffer, [jsonString UTF8String]);
+                }
+                return buffer;
+            }
+        }
+        
+        // Fallback to basic peripheral info if cached data not available
         CBPeripheral *peripheral = manager.discoveredPeripherals[deviceId];
-        
-        if (!peripheral) {
-            return ""; // Device not found
+        if (peripheral) {
+            NSDictionary *deviceInfo = @{
+                @"deviceId": peripheral.identifier.UUIDString,
+                @"name": peripheral.name ?: @"Unknown Device",
+                @"rssi": @0,
+                @"isConnectable": @YES,
+                @"serviceUUIDs": @[],
+                @"manufacturerData": @"",
+                @"localName": @"",
+                @"txPowerLevel": @0
+            };
+            
+            NSError *error;
+            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:deviceInfo options:0 error:&error];
+            if (jsonData && !error) {
+                NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+                if (jsonString.length < sizeof(buffer)) {
+                    strcpy(buffer, [jsonString UTF8String]);
+                }
+            }
         }
         
-        // Create device info JSON (basic info only, as we don't have advertisement data here)
-        NSDictionary *deviceInfo = @{
-            @"deviceId": peripheral.identifier.UUIDString,
-            @"name": peripheral.name ?: @"Unknown Device",
-            @"rssi": @0, // RSSI not available here
-            @"isConnectable": @YES,
-            @"serviceUUIDs": @[],
-            @"manufacturerData": @"",
-            @"localName": @"",
-            @"txPowerLevel": @0
-        };
-        
-        NSError *error;
-        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:deviceInfo options:0 error:&error];
-        if (jsonData && !error) {
-            NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-            // Note: This returns a pointer to the C string, but it may be deallocated
-            // In a real implementation, you'd want to use a static buffer or other memory management
-            return [jsonString UTF8String];
-        }
-        
-        return "";
+        return buffer;
     }
 }
