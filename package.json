@@ -1,0 +1,37 @@
+{
+  "name": "com.daiyk.unityble2ios",
+  "displayName": "Unity BLE iOS Plugin",
+  "version": "1.0.0",
+  "description": "A Unity plugin for Bluetooth Low Energy (BLE) communication on iOS devices using CoreBluetooth framework. Provides device discovery, connection management, and comprehensive BLE functionality.",
+  "unity": "2020.3",
+  "unityRelease": "0f1",
+  "keywords": [
+    "bluetooth",
+    "ble",
+    "ios",
+    "corebluetooth",
+    "native",
+    "plugin",
+    "wireless",
+    "connectivity"
+  ],
+  "author": {
+    "name": "Dai Yukun",
+    "email": "daiyukun2013@gmail.com",
+    "url": "https://github.com/daiyukun"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/daiyk/UnityBLE2IOS.git"
+  },
+  "license": "MIT",
+  "hideInEditor": false,
+  "type": "library",
+  "samples": [
+    {
+      "displayName": "Basic BLE Scanner",
+      "description": "Example scene showing how to scan for and connect to BLE devices",
+      "path": "Samples~/BasicBLEScanner"
+    }
+  ]
+}
