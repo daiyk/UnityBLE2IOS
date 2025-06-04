@@ -1,3 +1,15 @@
+//
+// Basic BLE Scanner Example
+// 
+// This example demonstrates how to use the UnityBLE2IOS plugin to:
+// - Request Bluetooth permissions
+// - Scan for BLE devices
+// - Connect/disconnect from devices
+// - Handle Bluetooth state changes
+//
+// Note: The BluetoothManager now auto-initializes when first accessed.
+// No manual Initialize() call is required.
+//
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
@@ -17,9 +29,6 @@ public class BluetoothExample : MonoBehaviour
 
     private void Start()
     {
-        // Initialize the Bluetooth manager
-        BluetoothManager.Instance.Initialize();
-
         // Subscribe to events
         BluetoothManager.Instance.OnBluetoothStateChanged += OnBluetoothStateChanged;
         BluetoothManager.Instance.OnDeviceDiscovered += OnDeviceDiscovered;
@@ -46,7 +55,7 @@ public class BluetoothExample : MonoBehaviour
         if (requestPermissionsButton != null)
             requestPermissionsButton.onClick.AddListener(RequestPermissions);
 
-        UpdateStatusText("Bluetooth Manager initialized. Request permissions to begin.");
+        UpdateStatusText("Bluetooth Manager ready. Request permissions to begin scanning.");
     }
 
     private void RequestPermissions()

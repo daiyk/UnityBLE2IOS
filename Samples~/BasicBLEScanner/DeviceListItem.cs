@@ -1,3 +1,10 @@
+//
+// Device List Item Component
+//
+// This component represents a single BLE device in the device list UI.
+// It displays device information (name, ID, RSSI) and connection status,
+// and provides a button to connect/disconnect from the device.
+//
 using System;
 using UnityEngine;
 using UnityEngine.UI;

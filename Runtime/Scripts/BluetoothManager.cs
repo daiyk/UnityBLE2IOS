@@ -8,14 +8,40 @@ namespace UnityBLE2IOS
 {
     public class BluetoothManager : MonoBehaviour
     {
+        /// <summary>
+        /// AutoInitialize the Bluetooth manager
+        /// </summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        private static void Initialize()
+        {
+            if (Instance.isInitialized) return;
+
+#if UNITY_IOS && !UNITY_EDITOR
+            _initializeBluetooth();
+            _requestPermissions();
+#endif
+            Instance.isInitialized = true;
+            Debug.Log("Bluetooth Manager initialized");
+        }
         private static BluetoothManager _instance;
         public static BluetoothManager Instance
         {
             get
             {
-                if (_instance == null)
+                GameObject go = GameObject.Find("BluetoothManager");
+                if (go != null)
                 {
-                    GameObject go = new GameObject("BluetoothManager");
+                    _instance = go.GetComponent<BluetoothManager>();
+                    if (_instance == null)
+                    {
+                        go.AddComponent<BluetoothManager>();
+                        _instance = go.GetComponent<BluetoothManager>();
+                        Debug.LogWarning("BluetoothManager component was missing, added automatically.");
+                    }
+                }
+                else
+                {
+                    go = new GameObject("BluetoothManager");
                     _instance = go.AddComponent<BluetoothManager>();
                     DontDestroyOnLoad(go);
                 }
@@ -81,19 +107,6 @@ namespace UnityBLE2IOS
             }
         }
 
-        /// <summary>
-        /// Initialize the Bluetooth manager
-        /// </summary>
-        public void Initialize()
-        {
-            if (isInitialized) return;
-
-#if UNITY_IOS && !UNITY_EDITOR
-            _initializeBluetooth();
-#endif
-            isInitialized = true;
-            Debug.Log("Bluetooth Manager initialized");
-        }
 
         /// <summary>
         /// Request Bluetooth permissions from the user

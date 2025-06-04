@@ -30,6 +30,33 @@ public class UnityBLE2IOSBuildProcessor
         rootDict.SetString("NSBluetoothPeripheralUsageDescription", 
             "This app needs Bluetooth access to communicate with peripheral devices.");
 
+        // Add background modes for Bluetooth
+        PlistElementArray backgroundModes;
+        if (rootDict["UIBackgroundModes"] != null)
+        {
+            backgroundModes = rootDict["UIBackgroundModes"].AsArray();
+        }
+        else
+        {
+            backgroundModes = rootDict.CreateArray("UIBackgroundModes");
+        }
+        
+        // Check if bluetooth-central is already added
+        bool hasBluetoothCentral = false;
+        for (int i = 0; i < backgroundModes.values.Count; i++)
+        {
+            if (backgroundModes.values[i].AsString() == "bluetooth-central")
+            {
+                hasBluetoothCentral = true;
+                break;
+            }
+        }
+        
+        if (!hasBluetoothCentral)
+        {
+            backgroundModes.AddString("bluetooth-central");
+        }
+
         // Write to file
         File.WriteAllText(plistPath, plist.WriteToString());
 

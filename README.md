@@ -4,6 +4,8 @@ A comprehensive Unity plugin for Bluetooth Low Energy (BLE) communication on iOS
 
 ## Features
 
+- ✅ **Auto-Initialization**: Automatically initializes before scene load - no manual setup required
+- ✅ **Smart GameObject Management**: Automatically finds or creates "BluetoothManager" GameObject
 - ✅ **Device Discovery**: Scan for BLE devices with comprehensive advertisement data
 - ✅ **Connection Management**: Connect and disconnect from BLE devices  
 - ✅ **Device Information**: Access RSSI, service UUIDs, manufacturer data, and more
@@ -32,22 +34,37 @@ A comprehensive Unity plugin for Bluetooth Low Energy (BLE) communication on iOS
 
 ## Requirements
 
-- **Unity**: 2020.3 or later
+- **Unity**: 2021.3 or later
 - **iOS**: 10.0 or later  
 - **Xcode**: 12 or later
 - **Platform**: iOS only (uses CoreBluetooth framework)
 
+## How It Works
+
+### Auto-Initialization
+The BluetoothManager automatically initializes when your app starts using Unity's `RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)`. This means:
+
+- ✅ **No manual initialization required** - Just access `BluetoothManager.Instance`
+- ✅ **Smart GameObject management** - Automatically looks for existing "BluetoothManager" GameObject or creates one
+- ✅ **Persistent across scenes** - The manager persists throughout your app lifecycle
+- ✅ **Component auto-attachment** - Automatically adds BluetoothManager component if missing
+
+### GameObject Management
+The plugin follows this logic:
+1. **Looks for existing GameObject** named "BluetoothManager" in the scene
+2. **Adds component if missing** - Attaches BluetoothManager component if GameObject exists but component is missing
+3. **Creates new GameObject** - If no "BluetoothManager" GameObject found, creates one automatically
+4. **Persists across scenes** - Uses `DontDestroyOnLoad()` to maintain the GameObject
+
 ## Usage
 
 ```csharp
-// Initialize Bluetooth
-BluetoothManager.Instance.Initialize();
 
-// Request permissions
-BluetoothManager.Instance.RequestPermissions();
-
-// Start scanning
+// Start scanning for devices
 BluetoothManager.Instance.StartScanning();
+
+// Request permissions if needed
+BluetoothManager.Instance.RequestPermissions();
 
 // Connect to a device
 BluetoothManager.Instance.ConnectToDevice(deviceId);
@@ -63,17 +80,16 @@ public class BLEController : MonoBehaviour
 {
     void Start()
     {
-        // Initialize the Bluetooth manager
-        BluetoothManager.Instance.Initialize();
+        var bluetoothManager = BluetoothManager.Instance;
         
         // Subscribe to events
-        BluetoothManager.Instance.OnDeviceDiscovered += OnDeviceFound;
-        BluetoothManager.Instance.OnDeviceConnected += OnDeviceConnected;
-        BluetoothManager.Instance.OnDeviceDisconnected += OnDeviceDisconnected;
-        BluetoothManager.Instance.OnPermissionResult += OnPermissionResult;
+        bluetoothManager.OnDeviceDiscovered += OnDeviceFound;
+        bluetoothManager.OnDeviceConnected += OnDeviceConnected;
+        bluetoothManager.OnDeviceDisconnected += OnDeviceDisconnected;
+        bluetoothManager.OnPermissionResult += OnPermissionResult;
         
-        // Request Bluetooth permissions
-        BluetoothManager.Instance.RequestPermissions();
+        // Request permissions (optional - auto-requested on first use)
+        bluetoothManager.RequestPermissions();
     }
     
     private void OnPermissionResult(bool granted)
@@ -122,7 +138,6 @@ public class BLEController : MonoBehaviour
 ### BluetoothManager (Singleton)
 
 #### Core Methods
-- `Initialize()` - Initialize the Bluetooth manager
 - `RequestPermissions()` - Request Bluetooth permissions from user
 - `StartScanning()` - Start scanning for BLE devices
 - `StopScanning()` - Stop scanning for BLE devices
@@ -137,6 +152,8 @@ public class BLEController : MonoBehaviour
 - `GetDiscoveredDevice(string deviceId)` - Get specific discovered device
 - `IsDeviceConnected(string deviceId)` - Check if device is connected
 - `IsDeviceDiscovered(string deviceId)` - Check if device was discovered
+- `ClearDiscoveredDevices()` - Clear the discovered devices list
+- `GetDiscoveredDeviceByIndex(int index)` - Get discovered device by index from native layer
 
 #### Status Methods
 - `IsBluetoothEnabled()` - Check if Bluetooth is enabled
@@ -208,6 +225,29 @@ The plugin includes simulation mode for testing in the Unity Editor:
 1. **No devices found**: Ensure Bluetooth is enabled and app has permission
 2. **Connection fails**: Check device is in range and connectable
 3. **Build errors**: Verify iOS deployment target is 10.0+
+4. **"Object BluetoothManager not found" error**: The GameObject is auto-created, but ensure you're accessing `BluetoothManager.Instance` before native callbacks occur
+
+### GameObject Setup
+If you want to manually place a "BluetoothManager" GameObject in your scene:
+
+1. Create an empty GameObject in your scene
+2. Name it exactly "BluetoothManager"
+3. The plugin will automatically attach the BluetoothManager component
+4. The GameObject will persist across scene changes automatically
+
+### Auto-Initialization Troubleshooting
+
+```csharp
+void Start() 
+{
+    // Force GameObject creation and verify setup
+    var manager = BluetoothManager.Instance;
+    
+    // Check if properly initialized
+    Debug.Log($"Bluetooth enabled: {manager.IsBluetoothEnabled()}");
+    Debug.Log($"Manager GameObject: {manager.gameObject.name}");
+}
+```
 
 ### Debug Logging
 
@@ -230,4 +270,4 @@ MIT License - see LICENSE file for details.
 
 ## Support
 
-For issues, feature requests, or contributions, please visit the [GitHub repository](https://github.com/yourusername/UnityBLE2IOS).
+For issues, feature requests, or contributions, please visit the [GitHub repository](https://github.com/daiyk/UnityBLE2IOS).

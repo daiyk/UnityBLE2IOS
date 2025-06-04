@@ -51,7 +51,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     if (self.centralManager == nil) {
         NSDictionary *options = @{
             CBCentralManagerOptionShowPowerAlertKey: @YES,
-            CBCentralManagerOptionRestoreIdentifierKey: @"UnityBLE2IOS"
+            CBCentralManagerOptionRestoreIdentifierKey: @"UnityBLE2IOSRestoreIdentifier"
         };
         self.centralManager = [[CBCentralManager alloc] initWithDelegate:self queue:nil options:options];
     }
@@ -150,7 +150,33 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 - (void)centralManager:(CBCentralManager *)central didDiscoverPeripheral:(CBPeripheral *)peripheral advertisementData:(NSDictionary<NSString *,id> *)advertisementData RSSI:(NSNumber *)RSSI {
     
     NSString *deviceId = peripheral.identifier.UUIDString;
-    NSString *deviceName = peripheral.name ?: @"Unknown Device";
+        // Try to get the best available name in order of preference:
+    // 1. Local name from advertisement data (most common for BLE devices)
+    // 2. Peripheral name (if set by device)
+    // 3. Fallback to "Unknown Device"
+    NSString *deviceName = @"Unknown Device";
+    
+    // First priority: Local name from advertisement data
+    NSString *localName = advertisementData[CBAdvertisementDataLocalNameKey];
+    if (localName && localName.length > 0) {
+        deviceName = localName;
+    }
+    // Second priority: Peripheral name
+    else if (peripheral.name && peripheral.name.length > 0) {
+        deviceName = peripheral.name;
+    }
+    // Third priority: Try to extract name from manufacturer data (device-specific)
+    else {
+        NSData *manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey];
+        if (manufacturerData && manufacturerData.length > 2) {
+            // Some devices encode name in manufacturer data - this is device-specific
+            // For example, some devices put readable text after the first 2 bytes
+            NSString *possibleName = [self extractNameFromManufacturerData:manufacturerData];
+            if (possibleName && possibleName.length > 0) {
+                deviceName = possibleName;
+            }
+        }
+    }
     
     // Skip devices with very weak signal (optional filtering)
     if ([RSSI intValue] < -90) {
@@ -162,14 +188,18 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     self.discoveredPeripherals[deviceId] = peripheral;
     
     // Extract additional identifying information from advertisement
-    NSString *localName = advertisementData[CBAdvertisementDataLocalNameKey] ?: @"";
     NSArray *serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] ?: @[];
     NSData *manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey];
     NSNumber *txPowerLevel = advertisementData[CBAdvertisementDataTxPowerLevelKey];
 
     // convert service UUIDs to string array safely
     NSMutableArray *serviceUUIDStrings = [NSMutableArray array];
-    if(serviceUUIDs){
+    if (serviceUUIDs.count == 0 && [deviceName isEqualToString:@"Unknown Device"]) {
+        // Skip devices with no name and no services (likely not useful)
+        return;
+    }
+    else
+    {
         for (CBUUID *uuid in serviceUUIDs) {
             [serviceUUIDStrings addObject:uuid.UUIDString];
         }
@@ -178,7 +208,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     // convert manufacturer data to Hex string if available
     NSString *manufacturerDataString = @"";
     if(manufacturerData && manufacturerData.length > 0) {
-        const unsigned char *dataBytes = [manufacturerData bytes];
+        const unsigned char *dataBytes = (const unsigned char *)[manufacturerData bytes];
         NSMutableString *hexString = [NSMutableString stringWithCapacity:manufacturerData.length * 2];
         for (NSInteger i = 0; i < manufacturerData.length; i++) {
             [hexString appendFormat:@"%02x", dataBytes[i]];
@@ -188,13 +218,13 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 
     // Create device info JSON
     NSDictionary *deviceInfo = @{
-        @"deviceId": deviceId,
-        @"name": deviceName,
+        @"deviceId": deviceId ?: @"Unknown Device ID",
+        @"name": deviceName ?: @"Unknown Device",
         @"rssi": RSSI,
         @"isConnectable": @YES,
         @"serviceUUIDs": serviceUUIDStrings,
         @"manufacturerData": manufacturerDataString,
-        @"localName": localName,
+        @"localName": localName ?: @"Unknown",
         @"txPowerLevel": txPowerLevel ?: @0
     };
     
@@ -241,6 +271,29 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     UnitySendMessage("BluetoothManager", "OnDeviceDisconnectedNative", [deviceId UTF8String]);
 }
 
+- (void)centralManager:(CBCentralManager *)central willRestoreState:(NSDictionary<NSString *, id> *)dict {
+    NSLog(@"Central Manager will restore state: %@", dict);
+    
+    // Restore discovered peripherals if any
+    NSArray *peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey];
+    if (peripherals) {
+        for (CBPeripheral *peripheral in peripherals) {
+            NSString *deviceId = peripheral.identifier.UUIDString;
+            self.discoveredPeripherals[deviceId] = peripheral;
+            peripheral.delegate = self;
+            NSLog(@"Restored peripheral: %@ (%@)", peripheral.name ?: @"Unknown", deviceId);
+        }
+    }
+    
+    // Check if scanning was active
+    NSArray *scanServices = dict[CBCentralManagerRestoredStateScanServicesKey];
+    NSDictionary *scanOptions = dict[CBCentralManagerRestoredStateScanOptionsKey];
+    if (scanServices || scanOptions) {
+        self.isScanning = YES;
+        NSLog(@"Restored scanning state");
+    }
+}
+
 #pragma mark - CBPeripheralDelegate
 
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverServices:(NSError *)error {
@@ -269,6 +322,27 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     for (CBCharacteristic *characteristic in service.characteristics) {
         NSLog(@"Characteristic UUID: %@, Properties: %lu", characteristic.UUID.UUIDString, (unsigned long)characteristic.properties);
     }
+}
+
+#pragma mark - Helper Methods
+// Helper method to try extracting readable name from manufacturer data
+- (NSString *)extractNameFromManufacturerData:(NSData *)manufacturerData {
+    if (manufacturerData.length <= 2) return nil;
+    
+    // Skip first 2 bytes (usually company identifier) and try to read as string
+    NSData *nameData = [manufacturerData subdataWithRange:NSMakeRange(2, manufacturerData.length - 2)];
+    NSString *possibleName = [[NSString alloc] initWithData:nameData encoding:NSUTF8StringEncoding];
+    
+    // Validate that it's a reasonable name (printable ASCII characters)
+    if (possibleName && possibleName.length > 0 && possibleName.length < 50) {
+        NSCharacterSet *printableSet = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_()[]"];
+        NSString *filtered = [[possibleName componentsSeparatedByCharactersInSet:[printableSet invertedSet]] componentsJoinedByString:@""];
+        if (filtered.length > 2) {  // At least 3 valid characters
+            return filtered;
+        }
+    }
+    
+    return nil;
 }
 
 @end
