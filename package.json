@@ -30,7 +30,7 @@
   "samples": [
     {
       "displayName": "Basic BLE Scanner",
-      "description": "Example scene showing how to scan for and connect to BLE devices",
+      "description": "Example scene with simple UIs showing how to scan for and connect to BLE devices, deploy to iOS for testing.",
       "path": "Samples~/BasicBLEScanner"
     }
   ]
