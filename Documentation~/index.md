@@ -62,7 +62,7 @@ Comprehensive error handling includes:
 - Bluetooth hardware capability
 
 ### Unity
-- Unity 2020.3 or later
+- Unity 2021.3 or later
 - iOS build support
 - Assembly definition support
 
