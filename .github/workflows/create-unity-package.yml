@@ -1,0 +1,66 @@
+name: Create Unity Package
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  create-unitypackage:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        lfs: true
+        fetch-depth: 0
+    
+    - name: Create Unity Package Structure
+      run: |
+        # Create package directory structure
+        mkdir -p unity-package/Assets/UnityBLE2IOS
+        
+        # Copy all package files
+        cp -r Runtime unity-package/Assets/UnityBLE2IOS/
+        cp -r Editor unity-package/Assets/UnityBLE2IOS/
+        cp -r Samples~ unity-package/Assets/UnityBLE2IOS/Samples
+        cp package.json unity-package/Assets/UnityBLE2IOS/
+        cp README.md unity-package/Assets/UnityBLE2IOS/
+        cp CHANGELOG.md unity-package/Assets/UnityBLE2IOS/
+        cp LICENSE unity-package/Assets/UnityBLE2IOS/
+    
+    - name: Create Unity Package Archive
+      run: |
+        # Get version from tag (remove 'v' prefix if present)
+        VERSION=${GITHUB_REF_NAME#v}
+        PACKAGE_NAME="UnityBLE2IOS-v${VERSION}.unitypackage"
+        
+        # Create Unity package (tar.gz format that Unity recognizes)
+        cd unity-package
+        tar -czf "../${PACKAGE_NAME}" Assets/
+        
+        echo "Created package: ${PACKAGE_NAME}"
+        ls -la "../${PACKAGE_NAME}"
+        
+        # Save package name for next step
+        echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
+    
+    - name: Upload Unity Package to Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: ${{ env.PACKAGE_NAME }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        append_body: true
+        body: |
+          
+          ## 📦 Installation Options
+          
+          **Option 1: Unity Package Manager (Recommended)**
+          ```
+          https://github.com/daiyk/UnityBLE2IOS.git
+          ```
+          
+          **Option 2: Download .unitypackage**
+          Download the attached `${{ env.PACKAGE_NAME }}` file and import it directly into your Unity project.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
