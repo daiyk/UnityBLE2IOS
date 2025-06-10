@@ -24,6 +24,12 @@ namespace UnityBLE2IOS
             Debug.Log("Bluetooth Manager initialized");
         }
         private static BluetoothManager _instance;
+
+        /// call this method to check if the instance exists before destroying or creating a new instance(e.g. OnDestroy)
+        public static bool HasInstance
+        {
+            get { return _instance != null; }
+        }
         public static BluetoothManager Instance
         {
             get
