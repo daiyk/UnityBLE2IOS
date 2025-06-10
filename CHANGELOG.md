@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2025-06-10
+
+### Added
+- **Complete Sample Scene**: Added comprehensive Unity BLE Sample scene (`Samples~/UnityBLESample/`) with full UI implementation
+  - **Interactive Sample Scene**: Complete working scene with pre-configured UI for immediate testing
+  - **Advanced Controllers**: Enhanced BLEStatusController with real-time device list management and debug console
+  - **Device List UI**: Interactive device list with selection, connection status, and visual feedback
+  - **Debug Console**: Real-time logging system for BLE operations and status updates
+  - **Emoji Font Support**: Included Apple Color Emoji font assets for proper text rendering in device names
+  - **Comprehensive Documentation**: Detailed README with setup instructions, troubleshooting, and customization guide
+
+### Changed
+- **Sample Structure**: Replaced basic example scripts with complete functional sample scene
+- **Package Samples**: Streamlined to single high-quality sample instead of multiple incomplete examples
+- **Documentation**: Updated main README to highlight the new comprehensive sample
+
+### Improved
+- **User Experience**: Users now get immediate working example instead of having to build UI from scratch
+- **Learning Curve**: Complete sample provides better reference implementation for developers
+- **Testing**: Ready-to-use scene for immediate BLE functionality testing on iOS devices
+
 ## [1.0.2] - 2025-06-05
 
 ### Added

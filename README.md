@@ -189,12 +189,23 @@ public class BluetoothDevice
 
 ## Examples
 
-The package includes example scripts in `Samples~/BasicBLEScanner/`:
+The package includes a comprehensive sample:
 
-- **BluetoothExample.cs** - Complete example showing device discovery and connection
-- **DeviceListItem.cs** - UI component for displaying device information
+### Unity BLE Sample (`Samples~/UnityBLESample/`)
+A complete BLE sample scene with full UI implementation:
+- **BLEStatusController.cs** - Main controller with comprehensive BLE management
+- **BLEDeviceItem.cs** - Interactive device list item component
+- **UnityBLESample.unity** - Complete sample scene
+- **BLE_Device.prefab** - Device list item prefab
 
-Import the samples through Package Manager to see complete usage examples.
+Features:
+- Interactive device scanning and connection
+- Real-time device list with RSSI updates
+- Debug console with operation logging
+- Connection status management
+- Visual feedback for device selection
+
+Import the sample through Package Manager to see a complete usage example.
 
 ## iOS Build Settings
 
