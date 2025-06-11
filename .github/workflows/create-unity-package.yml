@@ -46,21 +46,26 @@ jobs:
         echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
     
     - name: Upload Unity Package to Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: ${{ env.PACKAGE_NAME }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        append_body: true
-        body: |
-          
-          ## 📦 Installation Options
-          
-          **Option 1: Unity Package Manager (Recommended)**
-          ```
-          https://github.com/daiyk/UnityBLE2IOS.git
-          ```
-          
-          **Option 2: Download .unitypackage**
-          Download the attached `${{ env.PACKAGE_NAME }}` file and import it directly into your Unity project.
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # upload the package to the release
+        echo "Uploading ${PACKAGE_NAME} to release..."
+        gh release upload ${{github.ref_name}} "${{ env.PACKAGE_NAME }}" --clobber
+        
+        # get current release body
+        CURRENT_BODY=$(gh release view ${{github.ref_name}} --json body --jq .body)
+
+        NEW_BODY="$(CURRENT_BODY)"
+        
+        ## 📦 Installation Options
+        
+        **Option 1: Unity Package Manager (Recommended)**
+        ```
+        https://github.com/daiyk/UnityBLE2IOS.git
+        ```
+        
+        **Option 2: Download .unitypackage**
+        Download the attached `${{ env.PACKAGE_NAME }}` file and import it directly into your Unity project.
+
+        gh release edit ${{github.ref_name}} --notes "${NEW_BODY}"
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
