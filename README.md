@@ -33,13 +33,6 @@ A comprehensive Unity plugin for Bluetooth Low Energy (BLE) communication on iOS
 4. Enter: `https://github.com/daiyk/UnityBLE2IOS.git`
 5. Click "Add"
 
-### Via Unity Package Manager (Local)
-
-1. Clone or download this repository
-2. Open Unity Package Manager (Window → Package Manager)
-3. Click "+" → "Add package from disk..."
-4. Select the `package.json` file from the cloned repository
-
 ## Requirements
 
 - **Unity**: 2021.3 or later
