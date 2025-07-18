@@ -49,23 +49,28 @@ jobs:
       run: |
         # upload the package to the release
         echo "Uploading ${PACKAGE_NAME} to release..."
-        gh release upload "$GITHUB_REF_NAME" "$PACKAGE_NAME" --clobber
+        gh release upload ${{github.ref_name}} "${{ env.PACKAGE_NAME }}" --clobber
         
         # get current release body
-        CURRENT_BODY="$(gh release view "$GITHUB_REF_NAME" --json body --jq .body)"
+        CURRENT_BODY=$(gh release view ${{github.ref_name}} --json body --jq .body)
 
-        NEW_BODY="${CURRENT_BODY}"
-        
+        # Use a 'here document' (cat <<EOF) to correctly build the multiline string for the new release body.
+        # This appends the installation options to the existing release notes.
+        NEW_BODY=$(cat <<EOF
+        ${CURRENT_BODY}
+
         ## 📦 Installation Options
-        
-        **Option 1: Unity Package Manager (Recommended)**
-        ```
-        https://github.com/daiyk/UnityBLE2IOS.git
-        ```
-        
-        **Option 2: Download .unitypackage**
-        Download the attached `${{ env.PACKAGE_NAME }}` file and import it directly into your Unity project.
 
-        gh release edit "$GITHUB_REF_NAME" --notes "${NEW_BODY}"
+        **Option 1: Unity Package Manager (Recommended)**
+        \`\`\`
+        https://github.com/daiyk/UnityBLE2IOS.git
+        \`\`\`
+
+        **Option 2: Download .unitypackage**
+        Download the attached \`${{ env.PACKAGE_NAME }}\` file and import it directly into your Unity project.
+        EOF
+        )
+
+        gh release edit ${{github.ref_name}} --notes "$NEW_BODY"
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
