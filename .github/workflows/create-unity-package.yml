@@ -49,10 +49,10 @@ jobs:
       run: |
         # upload the package to the release
         echo "Uploading ${PACKAGE_NAME} to release..."
-        gh release upload ${{github.ref_name}} "${{ env.PACKAGE_NAME }}" --clobber
+        gh release upload ${{ github.ref_name }} "${{ env.PACKAGE_NAME }}" --clobber
         
         # get current release body
-        CURRENT_BODY=$(gh release view ${{github.ref_name}} --json body --jq .body)
+        CURRENT_BODY="$(gh release view "${{ github.ref_name }}" --json body --jq .body)"
 
         NEW_BODY="$(CURRENT_BODY)"
         
@@ -66,6 +66,6 @@ jobs:
         **Option 2: Download .unitypackage**
         Download the attached `${{ env.PACKAGE_NAME }}` file and import it directly into your Unity project.
 
-        gh release edit ${{github.ref_name}} --notes "${NEW_BODY}"
+        gh release edit ${{ github.ref_name }} --notes "${NEW_BODY}"
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
