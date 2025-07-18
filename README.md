@@ -35,10 +35,16 @@ A comprehensive Unity plugin for Bluetooth Low Energy (BLE) communication on iOS
 
 ## Requirements
 
-- **Unity**: 2021.3 or later
+- **Unity**: 2022.3 or later
 - **iOS**: 10.0 or later  
 - **Xcode**: 12 or later
 - **Platform**: iOS only (uses CoreBluetooth framework)
+
+## Unity Editor Simulation
+
+⚠️ **Important**: When running in the Unity Editor, this plugin uses **simulated devices** for debugging purposes. It does **NOT** perform actual Bluetooth scanning or connections.
+
+The plugin provides mock BLE devices and simulated connection behavior in the Unity Editor to allow you to develop and test your UI and application logic without needing an iOS device. Real Bluetooth operations only work when deployed to an actual iOS device.
 
 ## How It Works
 
@@ -221,14 +227,6 @@ The plugin automatically configures required iOS settings, but ensure:
    ```
 
 2. **Minimum iOS Version**: Set to iOS 10.0 or later
-
-## Editor Testing
-
-The plugin includes simulation mode for testing in the Unity Editor:
-
-- Simulates realistic BLE device discovery
-- Provides sample devices with different characteristics
-- Allows testing of UI and logic without iOS device
 
 ## Troubleshooting
 
