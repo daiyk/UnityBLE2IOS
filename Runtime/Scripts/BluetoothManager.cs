@@ -509,6 +509,26 @@ namespace UnityBLE2IOS
                     manufacturerData = "",
                     localName = "TempSense v2",
                     txPowerLevel = -4
+                },
+                new BluetoothDevice
+                {
+                    deviceId = "vernier-gdx-tmp-001",
+                    name = "GDX-TMP 071000ABC",
+                    rssi = -52,
+                    serviceUUIDs = new string[] { "f4bf14a6-c7d5-4b6d-8aa8-df1a7c83adcb", "b41e6675-a329-40e0-aa01-44d2f444babe", "180F" }, // Vernier Command & Response Services, Battery
+                    manufacturerData = "5700010203040506",
+                    localName = "GDX-TMP 071000ABC",
+                    txPowerLevel = 0
+                },
+                new BluetoothDevice
+                {
+                    deviceId = "vernier-gdx-for-002",
+                    name = "GDX-FOR 071000DEF",
+                    rssi = -48,
+                    serviceUUIDs = new string[] { "f4bf14a6-c7d5-4b6d-8aa8-df1a7c83adcb", "b41e6675-a329-40e0-aa01-44d2f444babe", "180A" }, // Vernier Command & Response Services, Device Info
+                    manufacturerData = "570001abcdef1234",
+                    localName = "GDX-FOR 071000DEF",
+                    txPowerLevel = 2
                 }
             };
 
