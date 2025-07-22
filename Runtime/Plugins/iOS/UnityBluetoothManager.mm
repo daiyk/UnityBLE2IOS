@@ -10,6 +10,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 @property (nonatomic, strong) NSMutableDictionary *discoveredPeripherals;
 @property (nonatomic, strong) NSMutableDictionary *connectedPeripherals;
 @property (nonatomic, strong) NSMutableDictionary *cachedAdvertisementData;
+@property (nonatomic, strong) NSMutableDictionary *peripheralCharacteristics; // deviceId -> { serviceUUID -> { characteristicUUID -> CBCharacteristic } }
 @property (nonatomic, assign) BOOL isScanning;
 
 + (instancetype)sharedInstance;
@@ -21,6 +22,10 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 - (void)disconnectDevice:(NSString *)deviceId;
 - (BOOL)isBluetoothEnabled;
 - (BOOL)isDeviceConnected:(NSString *)deviceId;
+// GATT characteristic operations
+- (void)writeValue:(NSData *)data toCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId;
+- (void)subscribeToCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId;
+- (void)unsubscribeFromCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId;
 
 @end
 
@@ -41,6 +46,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
         self.discoveredPeripherals = [[NSMutableDictionary alloc] init];
         self.connectedPeripherals = [[NSMutableDictionary alloc] init];
         self.cachedAdvertisementData = [[NSMutableDictionary alloc] init];
+        self.peripheralCharacteristics = [[NSMutableDictionary alloc] init];
         self.isScanning = NO;
     }
     return self;
@@ -268,6 +274,9 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     NSString *deviceId = peripheral.identifier.UUIDString;
     [self.connectedPeripherals removeObjectForKey:deviceId];
     
+    // Clean up stored characteristics for this device
+    [self.peripheralCharacteristics removeObjectForKey:deviceId];
+    
     UnitySendMessage("BluetoothManager", "OnDeviceDisconnectedNative", [deviceId UTF8String]);
 }
 
@@ -319,8 +328,268 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     
     NSLog(@"Discovered %lu characteristics for service: %@", (unsigned long)service.characteristics.count, service.UUID.UUIDString);
     
+    NSString *deviceId = peripheral.identifier.UUIDString;
+    NSString *serviceUUID = service.UUID.UUIDString;
+    
+    // Initialize nested dictionaries if they don't exist
+    if (!self.peripheralCharacteristics[deviceId]) {
+        self.peripheralCharacteristics[deviceId] = [[NSMutableDictionary alloc] init];
+    }
+    if (!self.peripheralCharacteristics[deviceId][serviceUUID]) {
+        self.peripheralCharacteristics[deviceId][serviceUUID] = [[NSMutableDictionary alloc] init];
+    }
+    
     for (CBCharacteristic *characteristic in service.characteristics) {
         NSLog(@"Characteristic UUID: %@, Properties: %lu", characteristic.UUID.UUIDString, (unsigned long)characteristic.properties);
+        
+        // Store the characteristic
+        NSString *characteristicUUID = characteristic.UUID.UUIDString;
+        self.peripheralCharacteristics[deviceId][serviceUUID][characteristicUUID] = characteristic;
+    }
+}
+
+#pragma mark - GATT Characteristic Operations
+
+- (void)writeValue:(NSData *)data toCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId {
+    NSLog(@"Writing data to characteristic %@ for device %@", characteristicUUID, deviceId);
+    
+    CBPeripheral *peripheral = self.connectedPeripherals[deviceId];
+    if (!peripheral) {
+        NSLog(@"Device %@ not connected", deviceId);
+        return;
+    }
+    
+    if (peripheral.state != CBPeripheralStateConnected) {
+        NSLog(@"Device %@ not in connected state", deviceId);
+        return;
+    }
+    
+    // Find the characteristic across all services
+    CBCharacteristic *targetCharacteristic = nil;
+    NSDictionary *deviceCharacteristics = self.peripheralCharacteristics[deviceId];
+    
+    for (NSString *serviceUUID in deviceCharacteristics) {
+        NSDictionary *serviceCharacteristics = deviceCharacteristics[serviceUUID];
+        CBCharacteristic *characteristic = serviceCharacteristics[characteristicUUID];
+        if (characteristic) {
+            targetCharacteristic = characteristic;
+            break;
+        }
+    }
+    
+    if (!targetCharacteristic) {
+        NSLog(@"Characteristic %@ not found for device %@", characteristicUUID, deviceId);
+        return;
+    }
+    
+    // Check if characteristic supports writing
+    if (!(targetCharacteristic.properties & CBCharacteristicPropertyWrite) && 
+        !(targetCharacteristic.properties & CBCharacteristicPropertyWriteWithoutResponse)) {
+        NSLog(@"Characteristic %@ does not support writing", characteristicUUID);
+        return;
+    }
+    
+    // Determine write type based on characteristic properties
+    CBCharacteristicWriteType writeType = CBCharacteristicWriteWithResponse;
+    if (targetCharacteristic.properties & CBCharacteristicPropertyWriteWithoutResponse) {
+        writeType = CBCharacteristicWriteWithoutResponse;
+    }
+    
+    // Log the data being written
+    NSMutableString *hexString = [NSMutableString string];
+    const unsigned char *bytes = (const unsigned char *)[data bytes];
+    for (NSUInteger i = 0; i < data.length; i++) {
+        [hexString appendFormat:@"%02X ", bytes[i]];
+    }
+    NSLog(@"Writing data: %@", hexString);
+    
+    // Write the data
+    [peripheral writeValue:data forCharacteristic:targetCharacteristic type:writeType];
+}
+
+- (void)subscribeToCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId {
+    NSLog(@"Subscribing to characteristic %@ for device %@", characteristicUUID, deviceId);
+    
+    CBPeripheral *peripheral = self.connectedPeripherals[deviceId];
+    if (!peripheral) {
+        NSLog(@"Device %@ not connected", deviceId);
+        return;
+    }
+    
+    if (peripheral.state != CBPeripheralStateConnected) {
+        NSLog(@"Device %@ not in connected state", deviceId);
+        return;
+    }
+    
+    // Find the characteristic across all services
+    CBCharacteristic *targetCharacteristic = nil;
+    NSDictionary *deviceCharacteristics = self.peripheralCharacteristics[deviceId];
+    
+    for (NSString *serviceUUID in deviceCharacteristics) {
+        NSDictionary *serviceCharacteristics = deviceCharacteristics[serviceUUID];
+        CBCharacteristic *characteristic = serviceCharacteristics[characteristicUUID];
+        if (characteristic) {
+            targetCharacteristic = characteristic;
+            break;
+        }
+    }
+    
+    if (!targetCharacteristic) {
+        NSLog(@"Characteristic %@ not found for device %@", characteristicUUID, deviceId);
+        return;
+    }
+    
+    // Check if characteristic supports notifications or indications
+    if (!(targetCharacteristic.properties & CBCharacteristicPropertyNotify) && 
+        !(targetCharacteristic.properties & CBCharacteristicPropertyIndicate)) {
+        NSLog(@"Characteristic %@ does not support notifications or indications", characteristicUUID);
+        return;
+    }
+    
+    // Subscribe to notifications
+    [peripheral setNotifyValue:YES forCharacteristic:targetCharacteristic];
+    NSLog(@"Subscribed to notifications for characteristic %@", characteristicUUID);
+}
+
+- (void)unsubscribeFromCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId {
+    NSLog(@"Unsubscribing from characteristic %@ for device %@", characteristicUUID, deviceId);
+    
+    CBPeripheral *peripheral = self.connectedPeripherals[deviceId];
+    if (!peripheral) {
+        NSLog(@"Device %@ not connected", deviceId);
+        return;
+    }
+    
+    if (peripheral.state != CBPeripheralStateConnected) {
+        NSLog(@"Device %@ not in connected state", deviceId);
+        return;
+    }
+    
+    // Find the characteristic across all services
+    CBCharacteristic *targetCharacteristic = nil;
+    NSDictionary *deviceCharacteristics = self.peripheralCharacteristics[deviceId];
+    
+    for (NSString *serviceUUID in deviceCharacteristics) {
+        NSDictionary *serviceCharacteristics = deviceCharacteristics[serviceUUID];
+        CBCharacteristic *characteristic = serviceCharacteristics[characteristicUUID];
+        if (characteristic) {
+            targetCharacteristic = characteristic;
+            break;
+        }
+    }
+    
+    if (!targetCharacteristic) {
+        NSLog(@"Characteristic %@ not found for device %@", characteristicUUID, deviceId);
+        return;
+    }
+    
+    // Check if characteristic supports notifications or indications
+    if (!(targetCharacteristic.properties & CBCharacteristicPropertyNotify) && 
+        !(targetCharacteristic.properties & CBCharacteristicPropertyIndicate)) {
+        NSLog(@"Characteristic %@ does not support notifications or indications", characteristicUUID);
+        return;
+    }
+    
+    // Check if currently subscribed
+    if (!targetCharacteristic.isNotifying) {
+        NSLog(@"Characteristic %@ is not currently subscribed", characteristicUUID);
+        return;
+    }
+    
+    // Unsubscribe from notifications
+    [peripheral setNotifyValue:NO forCharacteristic:targetCharacteristic];
+    NSLog(@"Unsubscribed from notifications for characteristic %@", characteristicUUID);
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    if (error) {
+        NSLog(@"Error updating value for characteristic %@: %@", characteristic.UUID.UUIDString, error.localizedDescription);
+        return;
+    }
+    
+    NSString *deviceId = peripheral.identifier.UUIDString;
+    NSString *characteristicUUID = characteristic.UUID.UUIDString;
+    NSData *value = characteristic.value;
+    
+    if (!value) {
+        NSLog(@"Received empty value for characteristic %@", characteristicUUID);
+        return;
+    }
+    
+    // Log the received data
+    NSMutableString *hexString = [NSMutableString string];
+    const unsigned char *bytes = (const unsigned char *)[value bytes];
+    for (NSUInteger i = 0; i < value.length; i++) {
+        [hexString appendFormat:@"%02X ", bytes[i]];
+    }
+    NSLog(@"Received data from characteristic %@: %@", characteristicUUID, hexString);
+    
+    // Convert data to hex string for Unity
+    NSMutableString *dataHexString = [NSMutableString stringWithCapacity:value.length * 2];
+    for (NSUInteger i = 0; i < value.length; i++) {
+        [dataHexString appendFormat:@"%02x", bytes[i]];
+    }
+    
+    // Create JSON message for Unity
+    NSDictionary *messageData = @{
+        @"deviceId": deviceId,
+        @"characteristicUUID": characteristicUUID,
+        @"data": dataHexString
+    };
+    
+    NSError *jsonError;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:messageData options:0 error:&jsonError];
+    if (jsonData && !jsonError) {
+        NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        UnitySendMessage("BluetoothManager", "OnCharacteristicValueReceivedNative", [jsonString UTF8String]);
+    } else {
+        NSLog(@"Error creating JSON for characteristic value: %@", jsonError.localizedDescription);
+    }
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didWriteValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    if (error) {
+        NSLog(@"Error writing value for characteristic %@: %@", characteristic.UUID.UUIDString, error.localizedDescription);
+        
+        // Notify Unity about the write error
+        NSString *deviceId = peripheral.identifier.UUIDString;
+        NSDictionary *errorData = @{
+            @"deviceId": deviceId,
+            @"characteristicUUID": characteristic.UUID.UUIDString,
+            @"error": error.localizedDescription
+        };
+        
+        NSError *jsonError;
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:errorData options:0 error:&jsonError];
+        if (jsonData && !jsonError) {
+            NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            UnitySendMessage("BluetoothManager", "OnCharacteristicWriteErrorNative", [jsonString UTF8String]);
+        }
+    } else {
+        NSLog(@"Successfully wrote value for characteristic %@", characteristic.UUID.UUIDString);
+        
+        // Notify Unity about successful write
+        NSString *deviceId = peripheral.identifier.UUIDString;
+        NSDictionary *successData = @{
+            @"deviceId": deviceId,
+            @"characteristicUUID": characteristic.UUID.UUIDString
+        };
+        
+        NSError *jsonError;
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:successData options:0 error:&jsonError];
+        if (jsonData && !jsonError) {
+            NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            UnitySendMessage("BluetoothManager", "OnCharacteristicWriteSuccessNative", [jsonString UTF8String]);
+        }
+    }
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    if (error) {
+        NSLog(@"Error updating notification state for characteristic %@: %@", characteristic.UUID.UUIDString, error.localizedDescription);
+    } else {
+        NSLog(@"Notification state updated for characteristic %@. Notifications enabled: %@", 
+              characteristic.UUID.UUIDString, characteristic.isNotifying ? @"YES" : @"NO");
     }
 }
 
@@ -367,11 +636,21 @@ extern "C" {
     }
     
     void _connectToDevice(const char* deviceId) {
+        if (!deviceId) {
+            NSLog(@"Error: Null deviceId passed to _connectToDevice");
+            return;
+        }
+        
         NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
         [[UnityBluetoothManager sharedInstance] connectToDevice:deviceIdString];
     }
     
     void _disconnectDevice(const char* deviceId) {
+        if (!deviceId) {
+            NSLog(@"Error: Null deviceId passed to _disconnectDevice");
+            return;
+        }
+        
         NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
         [[UnityBluetoothManager sharedInstance] disconnectDevice:deviceIdString];
     }
@@ -381,6 +660,11 @@ extern "C" {
     }
     
     bool _isDeviceConnected(const char* deviceId) {
+        if (!deviceId) {
+            NSLog(@"Error: Null deviceId passed to _isDeviceConnected");
+            return false;
+        }
+        
         NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
         return [[UnityBluetoothManager sharedInstance] isDeviceConnected:deviceIdString];
     }
@@ -440,6 +724,280 @@ extern "C" {
                     strcpy(buffer, [jsonString UTF8String]);
                 }
             }
+        }
+        
+        return buffer;
+    }
+    
+    // Write data to a characteristic
+    void _writeCharacteristic(const char* deviceId, const char* characteristicUUID, const char* hexData) {
+        if (!deviceId || !characteristicUUID || !hexData) {
+            NSLog(@"Error: Null parameters passed to _writeCharacteristic");
+            return;
+        }
+        
+        NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
+        NSString *characteristicUUIDString = [NSString stringWithUTF8String:characteristicUUID];
+        NSString *hexDataString = [NSString stringWithUTF8String:hexData];
+        
+        if (hexDataString.length == 0 || hexDataString.length % 2 != 0) {
+            NSLog(@"Error: Invalid hex data string: %@", hexDataString);
+            return;
+        }
+        
+        // Convert hex string to NSData
+        NSMutableData *data = [[NSMutableData alloc] init];
+        unsigned char byte;
+        for (int i = 0; i < hexDataString.length; i += 2) {
+            NSString *byteString = [hexDataString substringWithRange:NSMakeRange(i, 2)];
+            unsigned int hexValue;
+            NSScanner *scanner = [NSScanner scannerWithString:byteString];
+            if (![scanner scanHexInt:&hexValue]) {
+                NSLog(@"Error: Invalid hex byte in data: %@", byteString);
+                return;
+            }
+            byte = (unsigned char)hexValue;
+            [data appendBytes:&byte length:1];
+        }
+        
+        [[UnityBluetoothManager sharedInstance] writeValue:data 
+                                        toCharacteristic:characteristicUUIDString 
+                                               forDevice:deviceIdString];
+    }
+    
+    // Subscribe to characteristic notifications
+    void _subscribeToCharacteristic(const char* deviceId, const char* characteristicUUID) {
+        if (!deviceId || !characteristicUUID) {
+            NSLog(@"Error: Null parameters passed to _subscribeToCharacteristic");
+            return;
+        }
+        
+        NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
+        NSString *characteristicUUIDString = [NSString stringWithUTF8String:characteristicUUID];
+        
+        [[UnityBluetoothManager sharedInstance] subscribeToCharacteristic:characteristicUUIDString 
+                                                                forDevice:deviceIdString];
+    }
+    
+    // Unsubscribe from characteristic notifications
+    void _unsubscribeFromCharacteristic(const char* deviceId, const char* characteristicUUID) {
+        if (!deviceId || !characteristicUUID) {
+            NSLog(@"Error: Null parameters passed to _unsubscribeFromCharacteristic");
+            return;
+        }
+        
+        NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
+        NSString *characteristicUUIDString = [NSString stringWithUTF8String:characteristicUUID];
+        
+        [[UnityBluetoothManager sharedInstance] unsubscribeFromCharacteristic:characteristicUUIDString 
+                                                                    forDevice:deviceIdString];
+    }
+    
+    // Get discovered characteristics for a device as JSON string
+    const char* _getDeviceCharacteristics(const char* deviceId) {
+        static char buffer[4096]; // Static buffer for safe string return
+        buffer[0] = '\0'; // Initialize as empty string
+        
+        if (!deviceId) {
+            NSLog(@"Error: Null deviceId passed to _getDeviceCharacteristics");
+            strcpy(buffer, "[]");
+            return buffer;
+        }
+        
+        NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
+        UnityBluetoothManager *manager = [UnityBluetoothManager sharedInstance];
+        
+        NSDictionary *deviceCharacteristics = manager.peripheralCharacteristics[deviceIdString];
+        if (!deviceCharacteristics) {
+            // Return empty JSON array if no characteristics found
+            strcpy(buffer, "[]");
+            return buffer;
+        }
+        
+        NSMutableArray *characteristicsArray = [[NSMutableArray alloc] init];
+        
+        // Iterate through services and their characteristics
+        for (NSString *serviceUUID in deviceCharacteristics) {
+            NSDictionary *serviceCharacteristics = deviceCharacteristics[serviceUUID];
+            
+            for (NSString *characteristicUUID in serviceCharacteristics) {
+                CBCharacteristic *characteristic = serviceCharacteristics[characteristicUUID];
+                
+                // Build properties array
+                NSMutableArray *properties = [[NSMutableArray alloc] init];
+                if (characteristic.properties & CBCharacteristicPropertyRead) {
+                    [properties addObject:@"read"];
+                }
+                if (characteristic.properties & CBCharacteristicPropertyWrite) {
+                    [properties addObject:@"write"];
+                }
+                if (characteristic.properties & CBCharacteristicPropertyWriteWithoutResponse) {
+                    [properties addObject:@"writeWithoutResponse"];
+                }
+                if (characteristic.properties & CBCharacteristicPropertyNotify) {
+                    [properties addObject:@"notify"];
+                }
+                if (characteristic.properties & CBCharacteristicPropertyIndicate) {
+                    [properties addObject:@"indicate"];
+                }
+                
+                NSDictionary *characteristicInfo = @{
+                    @"serviceUUID": serviceUUID,
+                    @"characteristicUUID": characteristicUUID,
+                    @"properties": properties,
+                    @"isNotifying": @(characteristic.isNotifying)
+                };
+                
+                [characteristicsArray addObject:characteristicInfo];
+            }
+        }
+        
+        NSError *error;
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:characteristicsArray options:NSJSONWritingPrettyPrinted error:&error];
+        if (jsonData && !error) {
+            NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            if (jsonString.length < sizeof(buffer)) {
+                strcpy(buffer, [jsonString UTF8String]);
+            } else {
+                NSLog(@"Characteristics JSON too large for buffer");
+                strcpy(buffer, "[]");
+            }
+        } else {
+            NSLog(@"Error creating characteristics JSON: %@", error.localizedDescription);
+            strcpy(buffer, "[]");
+        }
+        
+        return buffer;
+    }
+    
+    // Get all services for a device as JSON string
+    const char* _getDeviceServices(const char* deviceId) {
+        static char buffer[2048]; // Static buffer for safe string return
+        buffer[0] = '\0'; // Initialize as empty string
+        
+        if (!deviceId) {
+            NSLog(@"Error: Null deviceId passed to _getDeviceServices");
+            strcpy(buffer, "[]");
+            return buffer;
+        }
+        
+        NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
+        UnityBluetoothManager *manager = [UnityBluetoothManager sharedInstance];
+        
+        NSDictionary *deviceCharacteristics = manager.peripheralCharacteristics[deviceIdString];
+        if (!deviceCharacteristics) {
+            // Return empty JSON array if no services found
+            strcpy(buffer, "[]");
+            return buffer;
+        }
+        
+        NSMutableArray *servicesArray = [[NSMutableArray alloc] init];
+        
+        // Iterate through services
+        for (NSString *serviceUUID in deviceCharacteristics) {
+            NSDictionary *serviceCharacteristics = deviceCharacteristics[serviceUUID];
+            
+            NSDictionary *serviceInfo = @{
+                @"serviceUUID": serviceUUID,
+                @"characteristicCount": @(serviceCharacteristics.count)
+            };
+            
+            [servicesArray addObject:serviceInfo];
+        }
+        
+        NSError *error;
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:servicesArray options:NSJSONWritingPrettyPrinted error:&error];
+        if (jsonData && !error) {
+            NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            if (jsonString.length < sizeof(buffer)) {
+                strcpy(buffer, [jsonString UTF8String]);
+            } else {
+                NSLog(@"Services JSON too large for buffer");
+                strcpy(buffer, "[]");
+            }
+        } else {
+            NSLog(@"Error creating services JSON: %@", error.localizedDescription);
+            strcpy(buffer, "[]");
+        }
+        
+        return buffer;
+    }
+    
+    // Get all characteristics for a specific service as JSON string
+    const char* _getServiceCharacteristics(const char* deviceId, const char* serviceUUID) {
+        static char buffer[3072]; // Static buffer for safe string return
+        buffer[0] = '\0'; // Initialize as empty string
+        
+        if (!deviceId || !serviceUUID) {
+            NSLog(@"Error: Null parameters passed to _getServiceCharacteristics");
+            strcpy(buffer, "[]");
+            return buffer;
+        }
+        
+        NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
+        NSString *serviceUUIDString = [NSString stringWithUTF8String:serviceUUID];
+        UnityBluetoothManager *manager = [UnityBluetoothManager sharedInstance];
+        
+        NSDictionary *deviceCharacteristics = manager.peripheralCharacteristics[deviceIdString];
+        if (!deviceCharacteristics) {
+            // Return empty JSON array if no device found
+            strcpy(buffer, "[]");
+            return buffer;
+        }
+        
+        NSDictionary *serviceCharacteristics = deviceCharacteristics[serviceUUIDString];
+        if (!serviceCharacteristics) {
+            // Return empty JSON array if service not found
+            strcpy(buffer, "[]");
+            return buffer;
+        }
+        
+        NSMutableArray *characteristicsArray = [[NSMutableArray alloc] init];
+        
+        // Iterate through characteristics in this service
+        for (NSString *characteristicUUID in serviceCharacteristics) {
+            CBCharacteristic *characteristic = serviceCharacteristics[characteristicUUID];
+            
+            // Build properties array
+            NSMutableArray *properties = [[NSMutableArray alloc] init];
+            if (characteristic.properties & CBCharacteristicPropertyRead) {
+                [properties addObject:@"read"];
+            }
+            if (characteristic.properties & CBCharacteristicPropertyWrite) {
+                [properties addObject:@"write"];
+            }
+            if (characteristic.properties & CBCharacteristicPropertyWriteWithoutResponse) {
+                [properties addObject:@"writeWithoutResponse"];
+            }
+            if (characteristic.properties & CBCharacteristicPropertyNotify) {
+                [properties addObject:@"notify"];
+            }
+            if (characteristic.properties & CBCharacteristicPropertyIndicate) {
+                [properties addObject:@"indicate"];
+            }
+            
+            NSDictionary *characteristicInfo = @{
+                @"characteristicUUID": characteristicUUID,
+                @"properties": properties,
+                @"isNotifying": @(characteristic.isNotifying)
+            };
+            
+            [characteristicsArray addObject:characteristicInfo];
+        }
+        
+        NSError *error;
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:characteristicsArray options:NSJSONWritingPrettyPrinted error:&error];
+        if (jsonData && !error) {
+            NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            if (jsonString.length < sizeof(buffer)) {
+                strcpy(buffer, [jsonString UTF8String]);
+            } else {
+                NSLog(@"Service characteristics JSON too large for buffer");
+                strcpy(buffer, "[]");
+            }
+        } else {
+            NSLog(@"Error creating service characteristics JSON: %@", error.localizedDescription);
+            strcpy(buffer, "[]");
         }
         
         return buffer;
