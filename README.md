@@ -11,6 +11,8 @@ A comprehensive Unity plugin for Bluetooth Low Energy (BLE) communication on iOS
 - ✅ **Device Information**: Access RSSI, service UUIDs, manufacturer data, and more
 - ✅ **Event-Driven Architecture**: Subscribe to discovery, connection, and state change events
 - ✅ **Connected Device Tracking**: Manage multiple connected devices simultaneously
+- ✅ **GATT Characteristic Operations**: Write data, subscribe/unsubscribe to notifications
+- ✅ **Service Discovery**: Discover and access all services and characteristics
 - ✅ **iOS CoreBluetooth Integration**: Native iOS implementation for optimal performance
 - ✅ **Editor Simulation**: Test your BLE logic in the Unity Editor
 - ✅ **Comprehensive Error Handling**: Robust error handling and logging
@@ -75,6 +77,12 @@ BluetoothManager.Instance.RequestPermissions();
 
 // Connect to a device
 BluetoothManager.Instance.ConnectToDevice(deviceId);
+
+// Write data to a characteristic
+BluetoothManager.Instance.WriteCharacteristic(deviceId, characteristicUUID, data);
+
+// Subscribe to notifications
+BluetoothManager.Instance.SubscribeToCharacteristic(deviceId, characteristicUUID);
 ```
 
 ## Quick Start
@@ -94,6 +102,7 @@ public class BLEController : MonoBehaviour
         bluetoothManager.OnDeviceConnected += OnDeviceConnected;
         bluetoothManager.OnDeviceDisconnected += OnDeviceDisconnected;
         bluetoothManager.OnPermissionResult += OnPermissionResult;
+        bluetoothManager.OnCharacteristicValueReceived += OnCharacteristicValue;
         
         // Request permissions (optional - auto-requested on first use)
         bluetoothManager.RequestPermissions();
@@ -125,12 +134,30 @@ public class BLEController : MonoBehaviour
     {
         Debug.Log($"Connected to device: {deviceId}");
         
-        // Get connected device info
-        var device = BluetoothManager.Instance.GetConnectedDevice(deviceId);
-        if (device != null)
+        // Get device services and characteristics
+        var services = BluetoothManager.Instance.GetDeviceServices(deviceId);
+        var characteristics = BluetoothManager.Instance.GetDeviceCharacteristics(deviceId);
+        
+        Debug.Log($"Device has {services.Length} services and {characteristics.Length} characteristics");
+        
+        // Example: Subscribe to notifications from a specific characteristic
+        foreach (var characteristic in characteristics)
         {
-            Debug.Log($"Connected device name: {device.name}");
+            if (characteristic.CanNotify())
+            {
+                BluetoothManager.Instance.SubscribeToCharacteristic(deviceId, characteristic.characteristicUUID);
+                break;
+            }
         }
+    }
+    
+    private void OnCharacteristicValue(CharacteristicValueMessage message)
+    {
+        Debug.Log($"Received data from {message.characteristicUUID}: {message.data}");
+        
+        // Convert hex data to bytes if needed
+        byte[] bytes = message.GetDataAsBytes();
+        string text = message.GetDataAsString();
     }
     
     private void OnDeviceDisconnected(string deviceId)
@@ -151,6 +178,17 @@ public class BLEController : MonoBehaviour
 - `ConnectToDevice(string deviceId)` - Connect to a specific device
 - `DisconnectDevice(string deviceId)` - Disconnect from a device
 - `DisconnectAllDevices()` - Disconnect from all connected devices
+
+#### GATT Characteristic Operations
+- `WriteCharacteristic(string deviceId, string characteristicUUID, byte[] data)` - Write byte data to characteristic
+- `WriteCharacteristic(string deviceId, string characteristicUUID, string hexData)` - Write hex string to characteristic
+- `SubscribeToCharacteristic(string deviceId, string characteristicUUID)` - Subscribe to characteristic notifications
+- `UnsubscribeFromCharacteristic(string deviceId, string characteristicUUID)` - Unsubscribe from notifications
+
+#### Service & Characteristic Discovery
+- `GetDeviceServices(string deviceId)` - Get all services for a connected device
+- `GetDeviceCharacteristics(string deviceId)` - Get all characteristics for a device
+- `GetServiceCharacteristics(string deviceId, string serviceUUID)` - Get characteristics for specific service
 
 #### Device Information
 - `GetDiscoveredDevices()` - Get list of all discovered devices
@@ -175,6 +213,9 @@ public class BLEController : MonoBehaviour
 - `OnDeviceDisconnected` - Device disconnected
 - `OnConnectionFailed` - Connection attempt failed
 - `OnPermissionResult` - Bluetooth permission result
+- `OnCharacteristicValueReceived` - Data received from characteristic
+- `OnCharacteristicWriteSuccess` - Characteristic write completed successfully
+- `OnCharacteristicWriteError` - Characteristic write failed
 
 ### BluetoothDevice
 
@@ -191,6 +232,76 @@ public class BluetoothDevice
     public string manufacturerData;   // Manufacturer-specific data (hex string)
     public string localName;          // Local name from advertisement
     public int txPowerLevel;          // Transmission power level
+}
+```
+
+### New Data Classes
+
+#### BluetoothCharacteristic
+```csharp
+public class BluetoothCharacteristic
+{
+    public string serviceUUID;          // Parent service UUID
+    public string characteristicUUID;   // Characteristic UUID
+    public string[] properties;         // Available operations (read, write, notify, etc.)
+    public bool isNotifying;           // Current notification state
+    
+    // Helper methods
+    public bool CanRead() { ... }      // Check if characteristic supports reading
+    public bool CanWrite() { ... }     // Check if characteristic supports writing
+    public bool CanNotify() { ... }    // Check if characteristic supports notifications
+}
+```
+
+#### CharacteristicValueMessage
+```csharp
+public class CharacteristicValueMessage
+{
+    public string deviceId;            // Source device ID
+    public string characteristicUUID;  // Characteristic UUID
+    public string data;               // Raw hex data
+    
+    // Helper methods
+    public byte[] GetDataAsBytes() { ... }     // Convert hex to byte array
+    public string GetDataAsString() { ... }    // Convert hex to UTF-8 string
+}
+```
+
+## GATT Operations Example
+
+```csharp
+void OnDeviceConnected(string deviceId)
+{
+    // Discover all characteristics
+    var characteristics = BluetoothManager.Instance.GetDeviceCharacteristics(deviceId);
+    
+    foreach (var characteristic in characteristics)
+    {
+        Debug.Log($"Found characteristic: {characteristic.characteristicUUID}");
+        Debug.Log($"Properties: {string.Join(", ", characteristic.properties)}");
+        
+        // Subscribe to notifications if supported
+        if (characteristic.CanNotify())
+        {
+            BluetoothManager.Instance.SubscribeToCharacteristic(deviceId, characteristic.characteristicUUID);
+        }
+        
+        // Write data if supported
+        if (characteristic.CanWrite())
+        {
+            byte[] data = { 0x01, 0x02, 0x03 };
+            BluetoothManager.Instance.WriteCharacteristic(deviceId, characteristic.characteristicUUID, data);
+        }
+    }
+}
+
+void OnCharacteristicValueReceived(CharacteristicValueMessage message)
+{
+    Debug.Log($"Data from {message.characteristicUUID}: {message.data}");
+    
+    // Process the received data
+    byte[] bytes = message.GetDataAsBytes();
+    // ... handle your device-specific protocol
 }
 ```
 

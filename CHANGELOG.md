@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-07-22
+
+### Added
+- **Complete GATT Characteristic Operations**: Implemented comprehensive BLE GATT operations for full device communication
+  - **Write Characteristic**: Added `WriteCharacteristic()` methods supporting both byte arrays and hex strings with automatic write type detection (with/without response)
+  - **Subscribe to Notifications**: Added `SubscribeToCharacteristic()` for receiving real-time data from BLE characteristics
+  - **Unsubscribe from Notifications**: Added `UnsubscribeFromCharacteristic()` for stopping characteristic notifications
+- **Service Discovery API**: Complete service and characteristic discovery functionality
+  - **Get Device Services**: Added `GetDeviceServices()` to retrieve all available services for a connected device
+  - **Get Device Characteristics**: Added `GetDeviceCharacteristics()` to retrieve all characteristics across all services
+  - **Get Service Characteristics**: Added `GetServiceCharacteristics()` to retrieve characteristics for a specific service
+- **C# Data Structures**: Created comprehensive type-safe classes for BLE communication
+  - **BluetoothCharacteristic**: Complete characteristic representation with properties, UUID, and helper methods (`CanRead()`, `CanWrite()`, `CanNotify()`, etc.)
+  - **BluetoothService**: Service representation with UUID and characteristic count
+  - **CharacteristicValueMessage**: Structured message for characteristic value updates with hex data conversion (`GetDataAsBytes()`, `GetDataAsString()`)
+  - **CharacteristicWriteResult**: Write operation result with success/error status and helper methods (`IsSuccess()`, `HasError()`)
+- **iOS Native Implementation**: Enhanced UnityBluetoothManager.mm with complete CoreBluetooth integration
+  - **GATT Operations**: Full implementation of write, subscribe, and unsubscribe operations with proper property validation
+  - **Characteristic Caching**: Intelligent caching system for discovered characteristics organized by device and service
+  - **Service Discovery**: Automatic service and characteristic discovery upon device connection
+  - **Unity Messaging**: Comprehensive Unity callback system for all BLE operations
+
+### Enhanced
+- **Input Validation**: Added comprehensive parameter validation throughout both iOS and Unity layers
+  - **Null Parameter Checks**: All native interface functions now validate input parameters and log errors for null values
+  - **Hex Data Validation**: Enhanced hex string parsing with proper format checking and error handling
+  - **Device State Validation**: Added connection state checks before performing GATT operations
+- **Error Handling**: Robust error handling and logging system
+  - **Native Error Reporting**: iOS layer reports detailed errors back to Unity for all operations
+  - **Unity Error Events**: Added comprehensive error event system with detailed error information
+  - **Debug Logging**: Enhanced logging throughout both native and managed code for better debugging
+- **Performance Optimization**: Improved efficiency and battery life
+  - **Explicit Subscription Control**: Removed auto-subscription behavior in favor of explicit control for better battery efficiency
+  - **Optimized Characteristic Discovery**: Streamlined discovery process without unnecessary Unity notifications
+  - **Memory Management**: Improved memory efficiency in characteristic caching and data handling
+
+### Fixed
+- **GATT Operation Stability**: Resolved issues with characteristic write, subscribe, and unsubscribe operations
+- **Service Discovery**: Fixed characteristic discovery completion detection and caching
+- **Data Conversion**: Enhanced hex string to byte array conversion with proper error handling
+- **Unity Integration**: Improved native-to-Unity communication with better JSON serialization
+
 ## [1.0.4] - 2025-07-18
 
 ### Fixed
