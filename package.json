@@ -1,7 +1,7 @@
 {
   "name": "com.daiyk.unityble2ios",
   "displayName": "Unity BLE iOS Plugin",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "A Unity plugin for Bluetooth Low Energy (BLE) communication on iOS devices using CoreBluetooth framework. Provides device discovery, connection management, and comprehensive BLE functionality.",
   "unity": "2022.3",
   "unityRelease": "0f1",
