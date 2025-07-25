@@ -42,6 +42,8 @@ A comprehensive Unity plugin for Bluetooth Low Energy (BLE) communication on iOS
 - **Xcode**: 12 or later
 - **Platform**: iOS only (uses CoreBluetooth framework)
 
+> **⚠️ Note**: The sample scene requires **Unity 6.0** or later to run properly. The core plugin works with Unity 2022.3+, but the sample scene uses TextMeshPro font assets that are not compatible between Unity 6.0 and lower versions.
+
 ## Unity Editor Simulation
 
 ⚠️ **Important**: When running in the Unity Editor, this plugin uses **simulated devices** for debugging purposes. It does **NOT** perform actual Bluetooth scanning or connections.
