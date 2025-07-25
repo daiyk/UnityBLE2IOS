@@ -1069,7 +1069,7 @@ GameObject:
   m_Component:
   - component: {fileID: 741524105}
   m_Layer: 0
-  m_Name: GameObject
+  m_Name: Placeholder
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -1321,7 +1321,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 1}
   m_AnchorMax: {x: 1, y: 1}
-  m_AnchoredPosition: {x: 0.000028755747, y: 0}
+  m_AnchoredPosition: {x: 0.0009303611, y: 0}
   m_SizeDelta: {x: -3, y: 0}
   m_Pivot: {x: 0, y: 1}
 --- !u!114 &1012259174
@@ -1467,7 +1467,7 @@ MonoBehaviour:
   m_HandleRect: {fileID: 621916615}
   m_Direction: 0
   m_Value: 0
-  m_Size: 0.99997246
+  m_Size: 0.9998345
   m_NumberOfSteps: 0
   m_OnValueChanged:
     m_PersistentCalls:
@@ -1584,7 +1584,7 @@ RectTransform:
   m_AnchorMin: {x: 0, y: 1}
   m_AnchorMax: {x: 0, y: 1}
   m_AnchoredPosition: {x: 50, y: -900}
-  m_SizeDelta: {x: 1000, y: 1050}
+  m_SizeDelta: {x: 1000, y: 1350}
   m_Pivot: {x: 0, y: 1}
 --- !u!114 &1248071703
 MonoBehaviour:
@@ -2273,7 +2273,7 @@ GameObject:
   m_Component:
   - component: {fileID: 1803382886}
   m_Layer: 5
-  m_Name: GameObject
+  m_Name: Placeholder
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -2378,8 +2378,8 @@ MonoBehaviour:
       m_Calls: []
   m_text: 
   m_isRightToLeft: 0
-  m_fontAsset: {fileID: 11400000, guid: 8a2a6779a57734089b6bb6bc1d9b46be, type: 2}
-  m_sharedMaterial: {fileID: 2180264, guid: 8a2a6779a57734089b6bb6bc1d9b46be, type: 2}
+  m_fontAsset: {fileID: 11400000, guid: efbac9c32fb4640399c1cffdcbdb3aa4, type: 2}
+  m_sharedMaterial: {fileID: -3436400969053824876, guid: efbac9c32fb4640399c1cffdcbdb3aa4, type: 2}
   m_fontSharedMaterials: []
   m_fontMaterial: {fileID: 0}
   m_fontMaterials: []
@@ -2737,7 +2737,6 @@ GameObject:
   m_Component:
   - component: {fileID: 2100578257}
   - component: {fileID: 2100578256}
-  - component: {fileID: 2100578255}
   m_Layer: 0
   m_Name: BLEManager
   m_TagString: Untagged
@@ -2745,18 +2744,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &2100578255
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2100578254}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 6a05e62b8ba054cd58ad029fccb9bcac, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
 --- !u!114 &2100578256
 MonoBehaviour:
   m_ObjectHideFlags: 0
