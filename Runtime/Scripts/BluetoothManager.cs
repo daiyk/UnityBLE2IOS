@@ -35,22 +35,15 @@ namespace UnityBLE2IOS
         {
             get
             {
-                GameObject go = GameObject.Find("BluetoothManager");
-                if (go != null)
+                if (_instance != null)
                 {
-                    _instance = go.GetComponent<BluetoothManager>();
-                    if (_instance == null)
-                    {
-                        go.AddComponent<BluetoothManager>();
-                        _instance = go.GetComponent<BluetoothManager>();
-                        Debug.LogWarning("BluetoothManager component was missing, added automatically.");
-                    }
+                    return _instance;
                 }
-                else
+                // If no instance was found, create a new one.
+                if (_instance == null)
                 {
-                    go = new GameObject("BluetoothManager");
+                    GameObject go = new GameObject("BluetoothManager");
                     _instance = go.AddComponent<BluetoothManager>();
-                    DontDestroyOnLoad(go);
                 }
                 return _instance;
             }
