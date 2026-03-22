@@ -11,6 +11,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 @property (nonatomic, strong) NSMutableDictionary *connectedPeripherals;
 @property (nonatomic, strong) NSMutableDictionary *cachedAdvertisementData;
 @property (nonatomic, strong) NSMutableDictionary *peripheralCharacteristics; // deviceId -> { serviceUUID -> { characteristicUUID -> CBCharacteristic } }
+@property (nonatomic, strong) NSMutableData *responseBuffer;
 @property (nonatomic, assign) BOOL isScanning;
 
 + (instancetype)sharedInstance;
@@ -47,6 +48,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
         self.connectedPeripherals = [[NSMutableDictionary alloc] init];
         self.cachedAdvertisementData = [[NSMutableDictionary alloc] init];
         self.peripheralCharacteristics = [[NSMutableDictionary alloc] init];
+        self.responseBuffer = [[NSMutableData alloc] init];
         self.isScanning = NO;
     }
     return self;
@@ -68,11 +70,6 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     // iOS handles permissions automatically when we try to use Bluetooth
     // Just initialize the central manager which will trigger permission request
     [self initializeBluetooth];
-    
-    // Simulate permission granted for now - in real app, this would be handled by the delegate
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UnitySendMessage("BluetoothManager", "OnPermissionResultNative", "1");
-    });
 }
 
 - (void)startScanning {
@@ -143,10 +140,33 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 
 - (void)centralManagerDidUpdateState:(CBCentralManager *)central {
     NSLog(@"Central Manager state updated: %ld", (long)central.state);
-    
-    BOOL isEnabled = (central.state == CBManagerStatePoweredOn);
-    NSString *stateString = isEnabled ? @"1" : @"0";
-    UnitySendMessage("BluetoothManager", "OnBluetoothStateChangedNative", [stateString UTF8String]);
+    BOOL isEnabled = NO;
+    switch (central.state) {
+        case CBManagerStatePoweredOn:
+            // Bluetooth is on and available. Permission is granted.
+            UnitySendMessage("BluetoothManager", "OnPermissionResultNative", "1");
+            UnitySendMessage("BluetoothManager", "OnBluetoothStateChangedNative", "Bluetooth permission is granted.");
+            isEnabled = YES;
+            break;
+        case CBManagerStateUnauthorized:
+            // The app is not authorized to use Bluetooth. Permission denied.
+            UnitySendMessage("BluetoothManager", "OnPermissionResultNative", "0");
+            UnitySendMessage("BluetoothManager", "OnBluetoothStateChangedNative", "Bluetooth permission is denied.");
+            isEnabled = NO;
+            break;
+        case CBManagerStatePoweredOff:
+            // User has Bluetooth turned off. For permission purposes, the app cannot proceed.
+            UnitySendMessage("BluetoothManager", "OnPermissionResultNative", "0");
+            UnitySendMessage("BluetoothManager", "OnBluetoothStateChangedNative", "Bluetooth is turned off.");
+            isEnabled = NO;
+            break;
+        default:
+            // Other states like resetting, unsupported. Treat as permission not granted.
+            UnitySendMessage("BluetoothManager", "OnPermissionResultNative", "0");
+            UnitySendMessage("BluetoothManager", "OnBluetoothStateChangedNative", "Bluetooth is not available for other reasons.");
+            isEnabled = NO;
+            break;
+    }
     
     if (!isEnabled && self.isScanning) {
         self.isScanning = NO;
@@ -329,7 +349,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     NSLog(@"Discovered %lu characteristics for service: %@", (unsigned long)service.characteristics.count, service.UUID.UUIDString);
     
     NSString *deviceId = peripheral.identifier.UUIDString;
-    NSString *serviceUUID = service.UUID.UUIDString;
+    NSString *serviceUUID = [service.UUID.UUIDString uppercaseString];
     
     // Initialize nested dictionaries if they don't exist
     if (!self.peripheralCharacteristics[deviceId]) {
@@ -343,12 +363,49 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
         NSLog(@"Characteristic UUID: %@, Properties: %lu", characteristic.UUID.UUIDString, (unsigned long)characteristic.properties);
         
         // Store the characteristic
-        NSString *characteristicUUID = characteristic.UUID.UUIDString;
+        NSString *characteristicUUID = [characteristic.UUID.UUIDString uppercaseString];
         self.peripheralCharacteristics[deviceId][serviceUUID][characteristicUUID] = characteristic;
     }
+    //check if all services have been discovered
+    BOOL allCharacteristicsDiscovered = YES;
+    // for (CBService *service in peripheral.services) {
+    //     if (!self.peripheralCharacteristics[deviceId][[service.UUID.UUIDString uppercaseString]]) {
+    //         allCharacteristicsDiscovered = NO;
+    //         break;
+    //     }
+    // }
+    if (peripheral.services.count != [self.peripheralCharacteristics[deviceId] allKeys].count) {
+        allCharacteristicsDiscovered = NO;
+    }
+
+    if(allCharacteristicsDiscovered){
+        NSLog(@"All characteristics discovered for device %@", deviceId);
+        // Notify Unity that all characteristics have been discovered
+        UnitySendMessage("BluetoothManager", "OnServicesDiscoveredNative", [deviceId UTF8String]);
+    }
+
 }
 
 #pragma mark - GATT Characteristic Operations
+
+- (CBCharacteristic *)findCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId {
+    NSDictionary *services = self.peripheralCharacteristics[deviceId];
+    if (!services) {
+        return nil;
+    }
+    
+    NSString *upperUUID = [characteristicUUID uppercaseString];
+    
+    for (NSString *serviceKey in services) {
+        NSDictionary *characteristics = services[serviceKey];
+        CBCharacteristic *characteristic = characteristics[upperUUID];
+        if (characteristic) {
+            return characteristic;
+        }
+    }
+    
+    return nil;
+}
 
 - (void)writeValue:(NSData *)data toCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId {
     NSLog(@"Writing data to characteristic %@ for device %@", characteristicUUID, deviceId);
@@ -363,19 +420,9 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
         NSLog(@"Device %@ not in connected state", deviceId);
         return;
     }
-    
+
     // Find the characteristic across all services
-    CBCharacteristic *targetCharacteristic = nil;
-    NSDictionary *deviceCharacteristics = self.peripheralCharacteristics[deviceId];
-    
-    for (NSString *serviceUUID in deviceCharacteristics) {
-        NSDictionary *serviceCharacteristics = deviceCharacteristics[serviceUUID];
-        CBCharacteristic *characteristic = serviceCharacteristics[characteristicUUID];
-        if (characteristic) {
-            targetCharacteristic = characteristic;
-            break;
-        }
-    }
+    CBCharacteristic *targetCharacteristic = [self findCharacteristic:characteristicUUID forDevice:deviceId];
     
     if (!targetCharacteristic) {
         NSLog(@"Characteristic %@ not found for device %@", characteristicUUID, deviceId);
@@ -390,9 +437,14 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     }
     
     // Determine write type based on characteristic properties
-    CBCharacteristicWriteType writeType = CBCharacteristicWriteWithResponse;
-    if (targetCharacteristic.properties & CBCharacteristicPropertyWriteWithoutResponse) {
+    CBCharacteristicWriteType writeType;
+    if (targetCharacteristic.properties & CBCharacteristicPropertyWrite) {
+        writeType = CBCharacteristicWriteWithResponse;
+    } else if (targetCharacteristic.properties & CBCharacteristicPropertyWriteWithoutResponse) {
         writeType = CBCharacteristicWriteWithoutResponse;
+    } else {
+        NSLog(@"Characteristic %@ does not support writing", characteristicUUID);
+        return;
     }
     
     // Log the data being written
@@ -422,17 +474,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     }
     
     // Find the characteristic across all services
-    CBCharacteristic *targetCharacteristic = nil;
-    NSDictionary *deviceCharacteristics = self.peripheralCharacteristics[deviceId];
-    
-    for (NSString *serviceUUID in deviceCharacteristics) {
-        NSDictionary *serviceCharacteristics = deviceCharacteristics[serviceUUID];
-        CBCharacteristic *characteristic = serviceCharacteristics[characteristicUUID];
-        if (characteristic) {
-            targetCharacteristic = characteristic;
-            break;
-        }
-    }
+    CBCharacteristic *targetCharacteristic = [self findCharacteristic:characteristicUUID forDevice:deviceId];
     
     if (!targetCharacteristic) {
         NSLog(@"Characteristic %@ not found for device %@", characteristicUUID, deviceId);
@@ -466,17 +508,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     }
     
     // Find the characteristic across all services
-    CBCharacteristic *targetCharacteristic = nil;
-    NSDictionary *deviceCharacteristics = self.peripheralCharacteristics[deviceId];
-    
-    for (NSString *serviceUUID in deviceCharacteristics) {
-        NSDictionary *serviceCharacteristics = deviceCharacteristics[serviceUUID];
-        CBCharacteristic *characteristic = serviceCharacteristics[characteristicUUID];
-        if (characteristic) {
-            targetCharacteristic = characteristic;
-            break;
-        }
-    }
+    CBCharacteristic *targetCharacteristic = [self findCharacteristic:characteristicUUID forDevice:deviceId];
     
     if (!targetCharacteristic) {
         NSLog(@"Characteristic %@ not found for device %@", characteristicUUID, deviceId);
@@ -501,6 +533,41 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     NSLog(@"Unsubscribed from notifications for characteristic %@", characteristicUUID);
 }
 
+- (void)processCompletePacket:(NSData *)packetData forPeripheral:(CBPeripheral *)peripheral fromCharacteristic:(CBCharacteristic *)characteristic {
+    NSString *deviceId = peripheral.identifier.UUIDString;
+    NSString *characteristicUUID = characteristic.UUID.UUIDString;
+
+    // Log the received data
+    NSMutableString *hexString = [NSMutableString string];
+    const unsigned char *bytes = (const unsigned char *)[packetData bytes];
+    for (NSUInteger i = 0; i < packetData.length; i++) {
+        [hexString appendFormat:@"%02X ", bytes[i]];
+    }
+    NSLog(@"Processing complete packet from %@: %@", characteristicUUID, hexString);
+
+    // Convert data to hex string for Unity
+    NSMutableString *dataHexString = [NSMutableString stringWithCapacity:packetData.length * 2];
+    for (NSUInteger i = 0; i < packetData.length; i++) {
+        [dataHexString appendFormat:@"%02x", bytes[i]];
+    }
+
+    // Create JSON message for Unity
+    NSDictionary *messageData = @{
+        @"deviceId": deviceId,
+        @"characteristicUUID": characteristicUUID,
+        @"data": dataHexString
+    };
+
+    NSError *jsonError;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:messageData options:0 error:&jsonError];
+    if (jsonData && !jsonError) {
+        NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        UnitySendMessage("BluetoothManager", "OnCharacteristicValueReceivedNative", [jsonString UTF8String]);
+    } else {
+        NSLog(@"Error creating JSON for characteristic value: %@", jsonError.localizedDescription);
+    }
+}
+
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
     if (error) {
         NSLog(@"Error updating value for characteristic %@: %@", characteristic.UUID.UUIDString, error.localizedDescription);
@@ -515,35 +582,57 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
         NSLog(@"Received empty value for characteristic %@", characteristicUUID);
         return;
     }
+    ///**** from here ****///
+    // // Log the received data
+    // NSMutableString *hexString = [NSMutableString string];
+    // const unsigned char *bytes = (const unsigned char *)[value bytes];
+    // for (NSUInteger i = 0; i < value.length; i++) {
+    //     [hexString appendFormat:@"%02X ", bytes[i]];
+    // }
+    // NSLog(@"Received data from characteristic %@: %@", characteristicUUID, hexString);
     
-    // Log the received data
-    NSMutableString *hexString = [NSMutableString string];
-    const unsigned char *bytes = (const unsigned char *)[value bytes];
-    for (NSUInteger i = 0; i < value.length; i++) {
-        [hexString appendFormat:@"%02X ", bytes[i]];
-    }
-    NSLog(@"Received data from characteristic %@: %@", characteristicUUID, hexString);
+    // // Convert data to hex string for Unity
+    // NSMutableString *dataHexString = [NSMutableString stringWithCapacity:value.length * 2];
+    // for (NSUInteger i = 0; i < value.length; i++) {
+    //     [dataHexString appendFormat:@"%02x", bytes[i]];
+    // }
     
-    // Convert data to hex string for Unity
-    NSMutableString *dataHexString = [NSMutableString stringWithCapacity:value.length * 2];
-    for (NSUInteger i = 0; i < value.length; i++) {
-        [dataHexString appendFormat:@"%02x", bytes[i]];
-    }
+    // // Create JSON message for Unity
+    // NSDictionary *messageData = @{
+    //     @"deviceId": deviceId,
+    //     @"characteristicUUID": characteristicUUID,
+    //     @"data": dataHexString
+    // };
     
-    // Create JSON message for Unity
-    NSDictionary *messageData = @{
-        @"deviceId": deviceId,
-        @"characteristicUUID": characteristicUUID,
-        @"data": dataHexString
-    };
-    
-    NSError *jsonError;
-    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:messageData options:0 error:&jsonError];
-    if (jsonData && !jsonError) {
-        NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-        UnitySendMessage("BluetoothManager", "OnCharacteristicValueReceivedNative", [jsonString UTF8String]);
-    } else {
-        NSLog(@"Error creating JSON for characteristic value: %@", jsonError.localizedDescription);
+    // NSError *jsonError;
+    // NSData *jsonData = [NSJSONSerialization dataWithJSONObject:messageData options:0 error:&jsonError];
+    // if (jsonData && !jsonError) {
+    //     NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+    //     UnitySendMessage("BluetoothManager", "OnCharacteristicValueReceivedNative", [jsonString UTF8String]);
+    // } else {
+    //     NSLog(@"Error creating JSON for characteristic value: %@", jsonError.localizedDescription);
+    // }
+
+    //append data to the buffer
+    [self.responseBuffer appendData:value];
+    // Check if we have a complete response (assuming a specific protocol)
+    while(self.responseBuffer.length >= 2) {
+        const unsigned char *bufferBytes = (const unsigned char *)[self.responseBuffer bytes];
+        int expectedLength = bufferBytes[1];
+
+        if (self.responseBuffer.length >= expectedLength) {
+            // We have a full packet, extract it
+            NSData *fullPacket = [self.responseBuffer subdataWithRange:NSMakeRange(0, expectedLength)];
+            
+            // Process the full packet
+            [self processCompletePacket:fullPacket forPeripheral:peripheral fromCharacteristic:characteristic];
+
+            // Remove the processed packet from the buffer
+            [self.responseBuffer replaceBytesInRange:NSMakeRange(0, expectedLength) withBytes:NULL length:0];
+        } else {
+            // Not enough data for a full packet, wait for more
+            break;
+        }
     }
 }
 
