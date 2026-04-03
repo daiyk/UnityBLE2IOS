@@ -50,9 +50,11 @@ public class BLEStatusController : MonoBehaviour
         // Subscribe to Bluetooth events
         BluetoothManager.Instance.OnDeviceDiscovered += OnDeviceDiscovered;
         BluetoothManager.Instance.OnDeviceConnected += OnDeviceConnected;
+        BluetoothManager.Instance.OnServicesDiscovered += OnServicesDiscovered;
         BluetoothManager.Instance.OnDeviceDisconnected += OnDeviceDisconnected;
         BluetoothManager.Instance.OnConnectionFailed += OnConnectionFailed;
         BluetoothManager.Instance.OnPermissionResult += OnPermissionResult;
+        BluetoothManager.Instance.OnCharacteristicNotificationStateChanged += OnCharacteristicNotificationStateChanged;
         
         // Setup button listeners
         if (m_ScanButton != null)
@@ -90,9 +92,11 @@ public class BLEStatusController : MonoBehaviour
         {
             BluetoothManager.Instance.OnDeviceDiscovered -= OnDeviceDiscovered;
             BluetoothManager.Instance.OnDeviceConnected -= OnDeviceConnected;
+            BluetoothManager.Instance.OnServicesDiscovered -= OnServicesDiscovered;
             BluetoothManager.Instance.OnDeviceDisconnected -= OnDeviceDisconnected;
             BluetoothManager.Instance.OnConnectionFailed -= OnConnectionFailed;
             BluetoothManager.Instance.OnPermissionResult -= OnPermissionResult;
+            BluetoothManager.Instance.OnCharacteristicNotificationStateChanged -= OnCharacteristicNotificationStateChanged;
         }
     }
     
@@ -222,9 +226,26 @@ public class BLEStatusController : MonoBehaviour
         {
             LogToDebugConsole($"🔗 CONNECTED to device: {deviceId}");
         }
+
+        LogToDebugConsole("   Waiting for services and characteristics...");
         
         // Display connection summary
         DisplayConnectionSummary();
+    }
+
+    private void OnServicesDiscovered(string deviceId)
+    {
+        if (deviceId != m_ConnectedDeviceId)
+        {
+            return;
+        }
+
+        BluetoothService[] services = BluetoothManager.Instance.GetDeviceServices(deviceId);
+        BluetoothCharacteristic[] characteristics = BluetoothManager.Instance.GetDeviceCharacteristics(deviceId);
+
+        LogToDebugConsole($"🧭 GATT READY for: {deviceId}");
+        LogToDebugConsole($"   Services: {services.Length}");
+        LogToDebugConsole($"   Characteristics: {characteristics.Length}");
     }
     
     private void OnDeviceDisconnected(string deviceId)
@@ -254,6 +275,19 @@ public class BLEStatusController : MonoBehaviour
             LogToDebugConsole("❌ Bluetooth permissions DENIED");
         }
         UpdateButtonStates();
+    }
+
+    private void OnCharacteristicNotificationStateChanged(CharacteristicNotificationStateResult result)
+    {
+        if (result.IsError())
+        {
+            LogToDebugConsole($"⚠️ Notification state error for {result.characteristicUUID}");
+            LogToDebugConsole($"   Error: {result.error}");
+            return;
+        }
+
+        string stateLabel = result.isNotifying ? "ENABLED" : "DISABLED";
+        LogToDebugConsole($"🔔 Notifications {stateLabel}: {result.characteristicUUID}");
     }
     
     private void LogToDebugConsole(string message)
@@ -325,6 +359,7 @@ public class BLEStatusController : MonoBehaviour
         status.AppendLine($"Discovered: {m_DeviceItems.Count} devices");
         status.AppendLine($"Selected: {(m_SelectedDevice != null ? m_SelectedDevice.name : "None")}");
         status.AppendLine($"Connected: {(m_IsConnected ? "YES" : "NO")}");
+        status.AppendLine($"GATT Ready: {(BluetoothManager.Instance.IsGattReady(m_ConnectedDeviceId) ? "YES" : "NO")}");
         
         if (m_IsConnected)
         {

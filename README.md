@@ -80,11 +80,14 @@ BluetoothManager.Instance.RequestPermissions();
 // Connect to a device
 BluetoothManager.Instance.ConnectToDevice(deviceId);
 
-// Write data to a characteristic
-BluetoothManager.Instance.WriteCharacteristic(deviceId, characteristicUUID, data);
+// Wait for OnServicesDiscovered before interacting with characteristics
+if (BluetoothManager.Instance.IsGattReady(deviceId))
+{
+    BluetoothManager.Instance.SubscribeToCharacteristic(deviceId, characteristicUUID);
+}
 
-// Subscribe to notifications
-BluetoothManager.Instance.SubscribeToCharacteristic(deviceId, characteristicUUID);
+// Then, in OnCharacteristicNotificationStateChanged after isNotifying == true:
+BluetoothManager.Instance.WriteCharacteristic(deviceId, characteristicUUID, data);
 ```
 
 ## Quick Start
@@ -102,9 +105,11 @@ public class BLEController : MonoBehaviour
         // Subscribe to events
         bluetoothManager.OnDeviceDiscovered += OnDeviceFound;
         bluetoothManager.OnDeviceConnected += OnDeviceConnected;
+        bluetoothManager.OnServicesDiscovered += OnServicesDiscovered;
         bluetoothManager.OnDeviceDisconnected += OnDeviceDisconnected;
         bluetoothManager.OnPermissionResult += OnPermissionResult;
         bluetoothManager.OnCharacteristicValueReceived += OnCharacteristicValue;
+        bluetoothManager.OnCharacteristicNotificationStateChanged += OnNotificationStateChanged;
         
         // Request permissions (optional - auto-requested on first use)
         bluetoothManager.RequestPermissions();
@@ -135,14 +140,16 @@ public class BLEController : MonoBehaviour
     private void OnDeviceConnected(string deviceId)
     {
         Debug.Log($"Connected to device: {deviceId}");
-        
-        // Get device services and characteristics
+        Debug.Log("Waiting for GATT discovery to complete before using characteristics");
+    }
+
+    private void OnServicesDiscovered(string deviceId)
+    {
         var services = BluetoothManager.Instance.GetDeviceServices(deviceId);
         var characteristics = BluetoothManager.Instance.GetDeviceCharacteristics(deviceId);
         
-        Debug.Log($"Device has {services.Length} services and {characteristics.Length} characteristics");
-        
-        // Example: Subscribe to notifications from a specific characteristic
+        Debug.Log($"GATT ready. Device has {services.Length} services and {characteristics.Length} characteristics");
+
         foreach (var characteristic in characteristics)
         {
             if (characteristic.CanNotify())
@@ -150,6 +157,23 @@ public class BLEController : MonoBehaviour
                 BluetoothManager.Instance.SubscribeToCharacteristic(deviceId, characteristic.characteristicUUID);
                 break;
             }
+        }
+    }
+
+    private void OnNotificationStateChanged(CharacteristicNotificationStateResult result)
+    {
+        if (result.IsError())
+        {
+            Debug.LogError($"Notification state update failed: {result.error}");
+            return;
+        }
+
+        Debug.Log($"Notifications {(result.isNotifying ? "enabled" : "disabled")} for {result.characteristicUUID}");
+
+        // Safe point for protocols that respond immediately after a command write.
+        if (result.isNotifying)
+        {
+            // BluetoothManager.Instance.WriteCharacteristic(result.deviceId, commandCharacteristicUUID, commandData);
         }
     }
     
@@ -180,6 +204,7 @@ public class BLEController : MonoBehaviour
 - `ConnectToDevice(string deviceId)` - Connect to a specific device
 - `DisconnectDevice(string deviceId)` - Disconnect from a device
 - `DisconnectAllDevices()` - Disconnect from all connected devices
+- `IsGattReady(string deviceId)` - Check whether services and characteristics have been discovered for a device
 
 #### GATT Characteristic Operations
 - `WriteCharacteristic(string deviceId, string characteristicUUID, byte[] data)` - Write byte data to characteristic
@@ -211,13 +236,15 @@ public class BLEController : MonoBehaviour
 #### Events
 - `OnBluetoothStateChanged` - Bluetooth enabled/disabled
 - `OnDeviceDiscovered` - New device discovered
-- `OnDeviceConnected` - Device connected successfully
+- `OnDeviceConnected` - Device link established
+- `OnServicesDiscovered` - Services and characteristics discovered; GATT operations are now safe
 - `OnDeviceDisconnected` - Device disconnected
 - `OnConnectionFailed` - Connection attempt failed
 - `OnPermissionResult` - Bluetooth permission result
 - `OnCharacteristicValueReceived` - Data received from characteristic
 - `OnCharacteristicWriteSuccess` - Characteristic write completed successfully
 - `OnCharacteristicWriteError` - Characteristic write failed
+- `OnCharacteristicNotificationStateChanged` - Notification state changed or failed
 
 ### BluetoothDevice
 
@@ -269,12 +296,25 @@ public class CharacteristicValueMessage
 }
 ```
 
+#### CharacteristicNotificationStateResult
+```csharp
+public class CharacteristicNotificationStateResult
+{
+    public string deviceId;            // Source device ID
+    public string characteristicUUID;  // Characteristic UUID
+    public bool isNotifying;           // Whether notifications are currently active
+    public string error;               // Error text, if any
+}
+```
+
 ## GATT Operations Example
 
 ```csharp
-void OnDeviceConnected(string deviceId)
+private string writableCharacteristicUUID;
+private readonly byte[] commandData = { 0x01, 0x02, 0x03 };
+
+void OnServicesDiscovered(string deviceId)
 {
-    // Discover all characteristics
     var characteristics = BluetoothManager.Instance.GetDeviceCharacteristics(deviceId);
     
     foreach (var characteristic in characteristics)
@@ -288,12 +328,27 @@ void OnDeviceConnected(string deviceId)
             BluetoothManager.Instance.SubscribeToCharacteristic(deviceId, characteristic.characteristicUUID);
         }
         
-        // Write data if supported
+        // Remember a writable characteristic, but wait for notifications to be active before sending a command.
         if (characteristic.CanWrite())
         {
-            byte[] data = { 0x01, 0x02, 0x03 };
-            BluetoothManager.Instance.WriteCharacteristic(deviceId, characteristic.characteristicUUID, data);
+            writableCharacteristicUUID = characteristic.characteristicUUID;
         }
+    }
+}
+
+void OnCharacteristicNotificationStateChanged(CharacteristicNotificationStateResult result)
+{
+    if (result.IsError())
+    {
+        Debug.LogError(result.error);
+        return;
+    }
+
+    Debug.Log($"Notification state for {result.characteristicUUID}: {result.isNotifying}");
+
+    if (result.isNotifying && !string.IsNullOrEmpty(writableCharacteristicUUID))
+    {
+        BluetoothManager.Instance.WriteCharacteristic(result.deviceId, writableCharacteristicUUID, commandData);
     }
 }
 

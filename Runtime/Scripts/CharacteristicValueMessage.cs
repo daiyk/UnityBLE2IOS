@@ -48,6 +48,23 @@ namespace UnityBLE2IOS
             return string.IsNullOrEmpty(data) ? 0 : data.Length / 2;
         }
 
+        /// <summary>
+        /// Converts the hex string data to a UTF-8 string.
+        /// </summary>
+        /// <returns>UTF-8 decoded string, or empty string if the payload cannot be decoded</returns>
+        public string GetDataAsString()
+        {
+            try
+            {
+                byte[] bytes = GetDataAsBytes();
+                return bytes.Length == 0 ? string.Empty : System.Text.Encoding.UTF8.GetString(bytes);
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
         public override string ToString()
         {
             return $"CharacteristicValueMessage(Device: {deviceId}, Characteristic: {characteristicUUID}, Data: {data})";

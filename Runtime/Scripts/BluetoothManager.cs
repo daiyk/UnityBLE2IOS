@@ -53,12 +53,14 @@ namespace UnityBLE2IOS
         public event Action<bool> OnBluetoothStateChanged;
         public event Action<BluetoothDevice> OnDeviceDiscovered;
         public event Action<string> OnDeviceConnected;
+        public event Action<string> OnServicesDiscovered;
         public event Action<string> OnDeviceDisconnected;
         public event Action<string, string> OnConnectionFailed;
         public event Action<bool> OnPermissionResult;
         public event Action<CharacteristicValueMessage> OnCharacteristicValueReceived;
         public event Action<CharacteristicWriteResult> OnCharacteristicWriteSuccess;
         public event Action<CharacteristicWriteResult> OnCharacteristicWriteError;
+        public event Action<CharacteristicNotificationStateResult> OnCharacteristicNotificationStateChanged;
 
 #if UNITY_IOS && !UNITY_EDITOR
         // Native iOS methods
@@ -113,6 +115,7 @@ namespace UnityBLE2IOS
 
         private List<BluetoothDevice> discoveredDevices = new List<BluetoothDevice>();
         private Dictionary<string, BluetoothDevice> connectedDevices = new Dictionary<string, BluetoothDevice>();
+        private HashSet<string> gattReadyDevices = new HashSet<string>();
         private bool isInitialized = false;
 
         private void Awake()
@@ -179,8 +182,14 @@ namespace UnityBLE2IOS
 #if UNITY_IOS && !UNITY_EDITOR
             _connectToDevice(deviceId);
 #else
-            // Simulate successful connection in editor
+            // Simulate successful connection and GATT discovery in editor
+            BluetoothDevice connectedDevice = discoveredDevices.Find(d => d.deviceId == deviceId) ??
+                                              new BluetoothDevice(deviceId, "Simulated Device");
+            connectedDevices[deviceId] = connectedDevice;
+            gattReadyDevices.Remove(deviceId);
             OnDeviceConnected?.Invoke(deviceId);
+            gattReadyDevices.Add(deviceId);
+            OnServicesDiscovered?.Invoke(deviceId);
 #endif
         }
 
@@ -194,6 +203,8 @@ namespace UnityBLE2IOS
 #if UNITY_IOS && !UNITY_EDITOR
             _disconnectDevice(deviceId);
 #else
+            connectedDevices.Remove(deviceId);
+            gattReadyDevices.Remove(deviceId);
             // Simulate disconnection in editor
             OnDeviceDisconnected?.Invoke(deviceId);
 #endif
@@ -222,8 +233,23 @@ namespace UnityBLE2IOS
 #if UNITY_IOS && !UNITY_EDITOR
             return _isDeviceConnected(deviceId);
 #else
-            return false; // Simulate not connected in editor
+            return connectedDevices.ContainsKey(deviceId);
 #endif
+        }
+
+        /// <summary>
+        /// Check if services and characteristics have been discovered for a connected device.
+        /// </summary>
+        /// <param name="deviceId">The device ID to check</param>
+        /// <returns>True if the device is ready for GATT operations</returns>
+        public bool IsGattReady(string deviceId)
+        {
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                return false;
+            }
+
+            return gattReadyDevices.Contains(deviceId);
         }
 
         /// <summary>
@@ -346,6 +372,7 @@ namespace UnityBLE2IOS
             status.AppendLine($"Bluetooth Enabled: {IsBluetoothEnabled()}");
             status.AppendLine($"Discovered Devices: {discoveredDevices.Count}");
             status.AppendLine($"Connected Devices: {connectedDevices.Count}");
+            status.AppendLine($"GATT Ready Devices: {gattReadyDevices.Count}");
             
             if (connectedDevices.Count > 0)
             {
@@ -392,6 +419,20 @@ namespace UnityBLE2IOS
 #if UNITY_IOS && !UNITY_EDITOR
             _writeCharacteristic(deviceId, characteristicUUID, hexData);
 #else
+            if (!IsDeviceConnected(deviceId))
+            {
+                var errorResult = new CharacteristicWriteResult(deviceId, characteristicUUID, "Device not connected");
+                OnCharacteristicWriteError?.Invoke(errorResult);
+                return;
+            }
+
+            if (!IsGattReady(deviceId))
+            {
+                var errorResult = new CharacteristicWriteResult(deviceId, characteristicUUID, "Characteristics not yet discovered for device");
+                OnCharacteristicWriteError?.Invoke(errorResult);
+                return;
+            }
+
             // Simulate successful write in editor
             var result = new CharacteristicWriteResult(deviceId, characteristicUUID);
             OnCharacteristicWriteSuccess?.Invoke(result);
@@ -429,6 +470,20 @@ namespace UnityBLE2IOS
 #if UNITY_IOS && !UNITY_EDITOR
             _writeCharacteristic(deviceId, characteristicUUID, hexData);
 #else
+            if (!IsDeviceConnected(deviceId))
+            {
+                var errorResult = new CharacteristicWriteResult(deviceId, characteristicUUID, "Device not connected");
+                OnCharacteristicWriteError?.Invoke(errorResult);
+                return;
+            }
+
+            if (!IsGattReady(deviceId))
+            {
+                var errorResult = new CharacteristicWriteResult(deviceId, characteristicUUID, "Characteristics not yet discovered for device");
+                OnCharacteristicWriteError?.Invoke(errorResult);
+                return;
+            }
+
             // Simulate successful write in editor
             var result = new CharacteristicWriteResult(deviceId, characteristicUUID);
             OnCharacteristicWriteSuccess?.Invoke(result);
@@ -459,8 +514,24 @@ namespace UnityBLE2IOS
 #if UNITY_IOS && !UNITY_EDITOR
             _subscribeToCharacteristic(deviceId, characteristicUUID);
 #else
+            if (!IsDeviceConnected(deviceId))
+            {
+                var errorResult = new CharacteristicNotificationStateResult(deviceId, characteristicUUID, false, "Device not connected");
+                OnCharacteristicNotificationStateChanged?.Invoke(errorResult);
+                return;
+            }
+
+            if (!IsGattReady(deviceId))
+            {
+                var errorResult = new CharacteristicNotificationStateResult(deviceId, characteristicUUID, false, "Characteristics not yet discovered for device");
+                OnCharacteristicNotificationStateChanged?.Invoke(errorResult);
+                return;
+            }
+
             // Simulate subscription in editor
             Debug.Log($"Simulated subscription to {characteristicUUID}");
+            var result = new CharacteristicNotificationStateResult(deviceId, characteristicUUID, true);
+            OnCharacteristicNotificationStateChanged?.Invoke(result);
 #endif
         }
 
@@ -488,8 +559,24 @@ namespace UnityBLE2IOS
 #if UNITY_IOS && !UNITY_EDITOR
             _unsubscribeFromCharacteristic(deviceId, characteristicUUID);
 #else
+            if (!IsDeviceConnected(deviceId))
+            {
+                var errorResult = new CharacteristicNotificationStateResult(deviceId, characteristicUUID, false, "Device not connected");
+                OnCharacteristicNotificationStateChanged?.Invoke(errorResult);
+                return;
+            }
+
+            if (!IsGattReady(deviceId))
+            {
+                var errorResult = new CharacteristicNotificationStateResult(deviceId, characteristicUUID, false, "Characteristics not yet discovered for device");
+                OnCharacteristicNotificationStateChanged?.Invoke(errorResult);
+                return;
+            }
+
             // Simulate unsubscription in editor
             Debug.Log($"Simulated unsubscription from {characteristicUUID}");
+            var result = new CharacteristicNotificationStateResult(deviceId, characteristicUUID, false);
+            OnCharacteristicNotificationStateChanged?.Invoke(result);
 #endif
         }
 
@@ -514,7 +601,7 @@ namespace UnityBLE2IOS
                 {
                     // Parse JSON array of characteristics
                     var wrapper = JsonUtility.FromJson<CharacteristicArrayWrapper>("{\"items\":" + characteristicsJson + "}");
-                    return wrapper.items;
+                    return wrapper?.items ?? new BluetoothCharacteristic[] { };
                 }
                 catch (Exception e)
                 {
@@ -554,7 +641,7 @@ namespace UnityBLE2IOS
                 {
                     // Parse JSON array of services
                     var wrapper = JsonUtility.FromJson<ServiceArrayWrapper>("{\"items\":" + servicesJson + "}");
-                    return wrapper.items;
+                    return wrapper?.items ?? new BluetoothService[] { };
                 }
                 catch (Exception e)
                 {
@@ -601,7 +688,7 @@ namespace UnityBLE2IOS
                 {
                     // Parse JSON array of characteristics
                     var wrapper = JsonUtility.FromJson<CharacteristicArrayWrapper>("{\"items\":" + characteristicsJson + "}");
-                    return wrapper.items;
+                    return wrapper?.items ?? new BluetoothCharacteristic[] { };
                 }
                 catch (Exception e)
                 {
@@ -690,6 +777,7 @@ namespace UnityBLE2IOS
         public void OnDeviceConnectedNative(string deviceId)
         {
             Debug.Log($"Device connected: {deviceId}");
+            gattReadyDevices.Remove(deviceId);
             
             // Find the device in discovered devices to store its full info
             BluetoothDevice connectedDevice = discoveredDevices.Find(d => d.deviceId == deviceId);
@@ -728,9 +816,29 @@ namespace UnityBLE2IOS
         }
 
         // Called from native iOS code
+        public void OnServicesDiscoveredNative(string deviceId)
+        {
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                Debug.LogWarning("Received services discovered callback with an empty device ID");
+                return;
+            }
+
+            if (!gattReadyDevices.Add(deviceId))
+            {
+                Debug.Log($"Services were already marked as discovered for device {deviceId}");
+                return;
+            }
+
+            Debug.Log($"Services and characteristics discovered for device {deviceId}");
+            OnServicesDiscovered?.Invoke(deviceId);
+        }
+
+        // Called from native iOS code
         public void OnDeviceDisconnectedNative(string deviceId)
         {
             Debug.Log($"Device disconnected: {deviceId}");
+            gattReadyDevices.Remove(deviceId);
             
             // Remove the device from connected devices
             if (connectedDevices.ContainsKey(deviceId))
@@ -748,6 +856,7 @@ namespace UnityBLE2IOS
             string[] parts = errorInfo.Split('|');
             string deviceId = parts.Length > 0 ? parts[0] : "";
             string error = parts.Length > 1 ? parts[1] : "Unknown error";
+            gattReadyDevices.Remove(deviceId);
             Debug.LogError($"Connection failed for device {deviceId}: {error}");
             OnConnectionFailed?.Invoke(deviceId, error);
         }
@@ -802,6 +911,23 @@ namespace UnityBLE2IOS
             catch (Exception e)
             {
                 Debug.LogError($"Error parsing characteristic write error: {e.Message}\nResult: {resultJson}");
+            }
+        }
+
+        // Called from native iOS code
+        public void OnCharacteristicNotificationStateChangedNative(string resultJson)
+        {
+            try
+            {
+                CharacteristicNotificationStateResult result = JsonUtility.FromJson<CharacteristicNotificationStateResult>(resultJson);
+                Debug.Log(
+                    $"Notification state changed for characteristic {result.characteristicUUID} on device {result.deviceId}: " +
+                    $"Notifying={result.isNotifying}, Error={result.error}");
+                OnCharacteristicNotificationStateChanged?.Invoke(result);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Error parsing characteristic notification state: {e.Message}\nResult: {resultJson}");
             }
         }
 
