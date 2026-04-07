@@ -11,6 +11,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 @property (nonatomic, strong) NSMutableDictionary *connectedPeripherals;
 @property (nonatomic, strong) NSMutableDictionary *cachedAdvertisementData;
 @property (nonatomic, strong) NSMutableDictionary *peripheralCharacteristics; // deviceId -> { serviceUUID -> { characteristicUUID -> CBCharacteristic } }
+@property (nonatomic, strong) NSMutableSet *pendingReadCharacteristics;
 @property (nonatomic, assign) BOOL isScanning;
 
 + (instancetype)sharedInstance;
@@ -23,9 +24,12 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 - (BOOL)isBluetoothEnabled;
 - (BOOL)isDeviceConnected:(NSString *)deviceId;
 // GATT characteristic operations
+- (void)readCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId;
 - (void)writeValue:(NSData *)data toCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId;
 - (void)subscribeToCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId;
 - (void)unsubscribeFromCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId;
+- (void)sendReadSuccessForDevice:(NSString *)deviceId characteristic:(NSString *)characteristicUUID data:(NSData *)value;
+- (void)sendReadErrorForDevice:(NSString *)deviceId characteristic:(NSString *)characteristicUUID error:(NSString *)errorMessage;
 - (void)sendWriteErrorForDevice:(NSString *)deviceId characteristic:(NSString *)characteristicUUID error:(NSString *)errorMessage;
 - (void)sendNotificationStateForDevice:(NSString *)deviceId characteristic:(NSString *)characteristicUUID isNotifying:(BOOL)isNotifying error:(NSString *)errorMessage;
 - (void)sendCharacteristicValue:(NSData *)value forPeripheral:(CBPeripheral *)peripheral fromCharacteristic:(CBCharacteristic *)characteristic;
@@ -50,6 +54,7 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
         self.connectedPeripherals = [[NSMutableDictionary alloc] init];
         self.cachedAdvertisementData = [[NSMutableDictionary alloc] init];
         self.peripheralCharacteristics = [[NSMutableDictionary alloc] init];
+        self.pendingReadCharacteristics = [[NSMutableSet alloc] init];
         self.isScanning = NO;
     }
     return self;
@@ -294,6 +299,15 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     
     NSString *deviceId = peripheral.identifier.UUIDString;
     [self.connectedPeripherals removeObjectForKey:deviceId];
+
+    NSString *pendingReadPrefix = [NSString stringWithFormat:@"%@:", deviceId];
+    NSMutableArray *pendingReadKeysToRemove = [[NSMutableArray alloc] init];
+    for (NSString *pendingReadKey in self.pendingReadCharacteristics) {
+        if ([pendingReadKey hasPrefix:pendingReadPrefix]) {
+            [pendingReadKeysToRemove addObject:pendingReadKey];
+        }
+    }
+    [self.pendingReadCharacteristics minusSet:[NSSet setWithArray:pendingReadKeysToRemove]];
     
     // Clean up stored characteristics for this device
     [self.peripheralCharacteristics removeObjectForKey:deviceId];
@@ -406,6 +420,56 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     }
     
     return nil;
+}
+
+- (NSString *)readRequestKeyForDevice:(NSString *)deviceId characteristic:(NSString *)characteristicUUID {
+    return [NSString stringWithFormat:@"%@:%@", deviceId ?: @"", [characteristicUUID uppercaseString] ?: @""];
+}
+
+- (void)readCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId {
+    NSLog(@"Reading characteristic %@ for device %@", characteristicUUID, deviceId);
+
+    CBPeripheral *peripheral = self.connectedPeripherals[deviceId];
+    if (!peripheral) {
+        NSString *errorMessage = [NSString stringWithFormat:@"Device %@ not connected", deviceId];
+        NSLog(@"%@", errorMessage);
+        [self sendReadErrorForDevice:deviceId characteristic:characteristicUUID error:errorMessage];
+        return;
+    }
+
+    if (peripheral.state != CBPeripheralStateConnected) {
+        NSString *errorMessage = [NSString stringWithFormat:@"Device %@ not in connected state", deviceId];
+        NSLog(@"%@", errorMessage);
+        [self sendReadErrorForDevice:deviceId characteristic:characteristicUUID error:errorMessage];
+        return;
+    }
+
+    NSDictionary *services = self.peripheralCharacteristics[deviceId];
+    if (!services || services.count == 0) {
+        NSString *errorMessage = @"Characteristics not yet discovered for device";
+        NSLog(@"%@", errorMessage);
+        [self sendReadErrorForDevice:deviceId characteristic:characteristicUUID error:errorMessage];
+        return;
+    }
+
+    CBCharacteristic *targetCharacteristic = [self findCharacteristic:characteristicUUID forDevice:deviceId];
+    if (!targetCharacteristic) {
+        NSString *errorMessage = [NSString stringWithFormat:@"Characteristic %@ not found for device %@", characteristicUUID, deviceId];
+        NSLog(@"%@", errorMessage);
+        [self sendReadErrorForDevice:deviceId characteristic:characteristicUUID error:errorMessage];
+        return;
+    }
+
+    if (!(targetCharacteristic.properties & CBCharacteristicPropertyRead)) {
+        NSString *errorMessage = [NSString stringWithFormat:@"Characteristic %@ does not support reading", characteristicUUID];
+        NSLog(@"%@", errorMessage);
+        [self sendReadErrorForDevice:deviceId characteristic:characteristicUUID error:errorMessage];
+        return;
+    }
+
+    NSString *readRequestKey = [self readRequestKeyForDevice:deviceId characteristic:targetCharacteristic.UUID.UUIDString];
+    [self.pendingReadCharacteristics addObject:readRequestKey];
+    [peripheral readValueForCharacteristic:targetCharacteristic];
 }
 
 - (void)writeValue:(NSData *)data toCharacteristic:(NSString *)characteristicUUID forDevice:(NSString *)deviceId {
@@ -603,6 +667,47 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     }
 }
 
+- (void)sendReadSuccessForDevice:(NSString *)deviceId characteristic:(NSString *)characteristicUUID data:(NSData *)value {
+    NSMutableString *dataHexString = [NSMutableString stringWithCapacity:value.length * 2];
+    const unsigned char *bytes = (const unsigned char *)[value bytes];
+    for (NSUInteger i = 0; i < value.length; i++) {
+        [dataHexString appendFormat:@"%02x", bytes[i]];
+    }
+
+    NSDictionary *messageData = @{
+        @"deviceId": deviceId ?: @"",
+        @"characteristicUUID": characteristicUUID ?: @"",
+        @"data": dataHexString
+    };
+
+    NSError *jsonError;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:messageData options:0 error:&jsonError];
+    if (jsonData && !jsonError) {
+        NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        UnitySendMessage("BluetoothManager", "OnCharacteristicReadSuccessNative", [jsonString UTF8String]);
+    } else {
+        NSLog(@"Error creating JSON for read success: %@", jsonError.localizedDescription);
+    }
+}
+
+- (void)sendReadErrorForDevice:(NSString *)deviceId characteristic:(NSString *)characteristicUUID error:(NSString *)errorMessage {
+    NSDictionary *errorData = @{
+        @"deviceId": deviceId ?: @"",
+        @"characteristicUUID": characteristicUUID ?: @"",
+        @"data": @"",
+        @"error": errorMessage ?: @"Unknown read error"
+    };
+
+    NSError *jsonError;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:errorData options:0 error:&jsonError];
+    if (jsonData && !jsonError) {
+        NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        UnitySendMessage("BluetoothManager", "OnCharacteristicReadErrorNative", [jsonString UTF8String]);
+    } else {
+        NSLog(@"Error creating JSON for read error: %@", jsonError.localizedDescription);
+    }
+}
+
 - (void)sendNotificationStateForDevice:(NSString *)deviceId characteristic:(NSString *)characteristicUUID isNotifying:(BOOL)isNotifying error:(NSString *)errorMessage {
     NSDictionary *messageData = @{
         @"deviceId": deviceId ?: @"",
@@ -657,8 +762,19 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
 }
 
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    NSString *deviceId = peripheral.identifier.UUIDString;
+    NSString *characteristicUUID = [characteristic.UUID.UUIDString uppercaseString];
+    NSString *readRequestKey = [self readRequestKeyForDevice:deviceId characteristic:characteristicUUID];
+    BOOL isPendingRead = [self.pendingReadCharacteristics containsObject:readRequestKey];
+
     if (error) {
         NSLog(@"Error updating value for characteristic %@: %@", characteristic.UUID.UUIDString, error.localizedDescription);
+
+        if (isPendingRead) {
+            [self.pendingReadCharacteristics removeObject:readRequestKey];
+            [self sendReadErrorForDevice:deviceId characteristic:characteristicUUID error:error.localizedDescription];
+        }
+
         return;
     }
 
@@ -666,6 +782,18 @@ extern "C" void UnitySendMessage(const char* obj, const char* method, const char
     
     if (!value) {
         NSLog(@"Received empty value for characteristic %@", characteristic.UUID.UUIDString);
+
+        if (isPendingRead) {
+            [self.pendingReadCharacteristics removeObject:readRequestKey];
+            [self sendReadErrorForDevice:deviceId characteristic:characteristicUUID error:@"Received empty value"]; 
+        }
+
+        return;
+    }
+
+    if (isPendingRead) {
+        [self.pendingReadCharacteristics removeObject:readRequestKey];
+        [self sendReadSuccessForDevice:deviceId characteristic:characteristicUUID data:value];
         return;
     }
 
@@ -896,6 +1024,19 @@ extern "C" {
         [[UnityBluetoothManager sharedInstance] writeValue:data 
                                         toCharacteristic:characteristicUUIDString 
                                                forDevice:deviceIdString];
+    }
+
+    void _readCharacteristic(const char* deviceId, const char* characteristicUUID) {
+        if (!deviceId || !characteristicUUID) {
+            NSLog(@"Error: Null parameters passed to _readCharacteristic");
+            return;
+        }
+
+        NSString *deviceIdString = [NSString stringWithUTF8String:deviceId];
+        NSString *characteristicUUIDString = [NSString stringWithUTF8String:characteristicUUID];
+
+        [[UnityBluetoothManager sharedInstance] readCharacteristic:characteristicUUIDString
+                                                         forDevice:deviceIdString];
     }
     
     // Subscribe to characteristic notifications

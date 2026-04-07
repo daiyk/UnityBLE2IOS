@@ -58,6 +58,8 @@ namespace UnityBLE2IOS
         public event Action<string, string> OnConnectionFailed;
         public event Action<bool> OnPermissionResult;
         public event Action<CharacteristicValueMessage> OnCharacteristicValueReceived;
+        public event Action<CharacteristicReadResult> OnCharacteristicReadSuccess;
+        public event Action<CharacteristicReadResult> OnCharacteristicReadError;
         public event Action<CharacteristicWriteResult> OnCharacteristicWriteSuccess;
         public event Action<CharacteristicWriteResult> OnCharacteristicWriteError;
         public event Action<CharacteristicNotificationStateResult> OnCharacteristicNotificationStateChanged;
@@ -92,8 +94,11 @@ namespace UnityBLE2IOS
         private static extern int _getDiscoveredDeviceCount();
         
         [DllImport("__Internal")]
-        private static extern string _getDiscoveredDeviceInfo(int index);
+        private static extern IntPtr _getDiscoveredDeviceInfo(int index);
         
+        [DllImport("__Internal")]
+        private static extern void _readCharacteristic(string deviceId, string characteristicUUID);
+
         [DllImport("__Internal")]
         private static extern void _writeCharacteristic(string deviceId, string characteristicUUID, string hexData);
         
@@ -104,19 +109,34 @@ namespace UnityBLE2IOS
         private static extern void _unsubscribeFromCharacteristic(string deviceId, string characteristicUUID);
         
         [DllImport("__Internal")]
-        private static extern string _getDeviceCharacteristics(string deviceId);
+        private static extern IntPtr _getDeviceCharacteristics(string deviceId);
         
         [DllImport("__Internal")]
-        private static extern string _getDeviceServices(string deviceId);
+        private static extern IntPtr _getDeviceServices(string deviceId);
         
         [DllImport("__Internal")]
-        private static extern string _getServiceCharacteristics(string deviceId, string serviceUUID);
+        private static extern IntPtr _getServiceCharacteristics(string deviceId, string serviceUUID);
 #endif
+
+        [SerializeField] private float _connectionTimeout = 10f;
+        [SerializeField] private int _maxRetries = 3;
+        [SerializeField] private float _retryDelay = 2f;
 
         private List<BluetoothDevice> discoveredDevices = new List<BluetoothDevice>();
         private Dictionary<string, BluetoothDevice> connectedDevices = new Dictionary<string, BluetoothDevice>();
         private HashSet<string> gattReadyDevices = new HashSet<string>();
+        private Dictionary<string, int> _retryCounters = new Dictionary<string, int>();
+        private Dictionary<string, Coroutine> _retryCoroutines = new Dictionary<string, Coroutine>();
+        private Dictionary<string, Coroutine> _timeoutCoroutines = new Dictionary<string, Coroutine>();
+        private HashSet<string> _intentionalDisconnects = new HashSet<string>();
+        private HashSet<string> _connectionAttemptsInProgress = new HashSet<string>();
+        private HashSet<string> _reconnectAfterDisconnectDevices = new HashSet<string>();
         private bool isInitialized = false;
+
+#if UNITY_EDITOR
+        // Editor simulation: track active notification coroutines so they can be stopped on unsubscribe
+        private Dictionary<string, Coroutine> _simulatedNotificationCoroutines = new Dictionary<string, Coroutine>();
+#endif
 
         private void Awake()
         {
@@ -129,6 +149,16 @@ namespace UnityBLE2IOS
             {
                 Destroy(gameObject);
             }
+        }
+
+        private static string PtrToString(IntPtr pointer)
+        {
+            if (pointer == IntPtr.Zero)
+            {
+                return null;
+            }
+
+            return Marshal.PtrToStringAnsi(pointer);
         }
 
 
@@ -178,19 +208,17 @@ namespace UnityBLE2IOS
         /// <param name="deviceId">The device ID to connect to</param>
         public void ConnectToDevice(string deviceId)
         {
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                Debug.LogWarning("ConnectToDevice: Device ID is null or empty");
+                return;
+            }
+
             Debug.Log($"Connecting to device: {deviceId}");
-#if UNITY_IOS && !UNITY_EDITOR
-            _connectToDevice(deviceId);
-#else
-            // Simulate successful connection and GATT discovery in editor
-            BluetoothDevice connectedDevice = discoveredDevices.Find(d => d.deviceId == deviceId) ??
-                                              new BluetoothDevice(deviceId, "Simulated Device");
-            connectedDevices[deviceId] = connectedDevice;
-            gattReadyDevices.Remove(deviceId);
-            OnDeviceConnected?.Invoke(deviceId);
-            gattReadyDevices.Add(deviceId);
-            OnServicesDiscovered?.Invoke(deviceId);
-#endif
+            _intentionalDisconnects.Remove(deviceId);
+            _reconnectAfterDisconnectDevices.Remove(deviceId);
+            _retryCounters.Remove(deviceId);
+            BeginConnectionAttempt(deviceId);
         }
 
         /// <summary>
@@ -199,12 +227,26 @@ namespace UnityBLE2IOS
         /// <param name="deviceId">The device ID to disconnect from</param>
         public void DisconnectDevice(string deviceId)
         {
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                Debug.LogWarning("DisconnectDevice: Device ID is null or empty");
+                return;
+            }
+
             Debug.Log($"Disconnecting from device: {deviceId}");
+            _intentionalDisconnects.Add(deviceId);
+            StopRetryCoroutine(deviceId);
+            StopConnectionTimeout(deviceId);
+            _connectionAttemptsInProgress.Remove(deviceId);
+            _retryCounters.Remove(deviceId);
+            _reconnectAfterDisconnectDevices.Remove(deviceId);
 #if UNITY_IOS && !UNITY_EDITOR
             _disconnectDevice(deviceId);
 #else
             connectedDevices.Remove(deviceId);
             gattReadyDevices.Remove(deviceId);
+            StopSimulatedNotificationsForDevice(deviceId);
+            _intentionalDisconnects.Remove(deviceId);
             // Simulate disconnection in editor
             OnDeviceDisconnected?.Invoke(deviceId);
 #endif
@@ -250,6 +292,74 @@ namespace UnityBLE2IOS
             }
 
             return gattReadyDevices.Contains(deviceId);
+        }
+
+        /// <summary>
+        /// Cancel any active reconnection flow for a device.
+        /// </summary>
+        /// <param name="deviceId">The device ID</param>
+        public void CancelReconnection(string deviceId)
+        {
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                Debug.LogWarning("CancelReconnection: Device ID is null or empty");
+                return;
+            }
+
+            bool hadActiveReconnect = _retryCoroutines.ContainsKey(deviceId) ||
+                                      _timeoutCoroutines.ContainsKey(deviceId) ||
+                                      _connectionAttemptsInProgress.Contains(deviceId);
+            bool wasRecoveringDisconnect = _reconnectAfterDisconnectDevices.Contains(deviceId);
+
+            StopRetryCoroutine(deviceId);
+            StopConnectionTimeout(deviceId);
+            _connectionAttemptsInProgress.Remove(deviceId);
+            _retryCounters.Remove(deviceId);
+            _reconnectAfterDisconnectDevices.Remove(deviceId);
+
+            if (!hadActiveReconnect)
+            {
+                return;
+            }
+
+            OnConnectionFailed?.Invoke(deviceId, "Reconnection cancelled");
+            if (wasRecoveringDisconnect && !connectedDevices.ContainsKey(deviceId))
+            {
+                OnDeviceDisconnected?.Invoke(deviceId);
+            }
+        }
+
+        /// <summary>
+        /// Get the current retry attempt count for a device.
+        /// </summary>
+        /// <param name="deviceId">The device ID</param>
+        /// <returns>The retry count, or 0 if the device is not retrying</returns>
+        public int GetRetryCount(string deviceId)
+        {
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                return 0;
+            }
+
+            return _retryCounters.TryGetValue(deviceId, out int retryCount) ? retryCount : 0;
+        }
+
+        /// <summary>
+        /// Check whether a device is currently in an automatic reconnection flow.
+        /// </summary>
+        /// <param name="deviceId">The device ID</param>
+        /// <returns>True when an automatic retry is active</returns>
+        public bool IsReconnecting(string deviceId)
+        {
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                return false;
+            }
+
+            return GetRetryCount(deviceId) > 0 &&
+                   (_retryCoroutines.ContainsKey(deviceId) ||
+                    _timeoutCoroutines.ContainsKey(deviceId) ||
+                    _connectionAttemptsInProgress.Contains(deviceId));
         }
 
         /// <summary>
@@ -339,7 +449,7 @@ namespace UnityBLE2IOS
         public BluetoothDevice GetDiscoveredDeviceByIndex(int index)
         {
 #if UNITY_IOS && !UNITY_EDITOR
-            string deviceInfo = _getDiscoveredDeviceInfo(index);
+            string deviceInfo = PtrToString(_getDiscoveredDeviceInfo(index));
             if (!string.IsNullOrEmpty(deviceInfo))
             {
                 try
@@ -491,6 +601,50 @@ namespace UnityBLE2IOS
         }
 
         /// <summary>
+        /// Read a BLE characteristic once.
+        /// </summary>
+        /// <param name="deviceId">The device ID</param>
+        /// <param name="characteristicUUID">The characteristic UUID</param>
+        public void ReadCharacteristic(string deviceId, string characteristicUUID)
+        {
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                Debug.LogWarning("ReadCharacteristic: Device ID is null or empty");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(characteristicUUID))
+            {
+                Debug.LogWarning("ReadCharacteristic: Characteristic UUID is null or empty");
+                return;
+            }
+
+            Debug.Log($"Reading characteristic {characteristicUUID} on device {deviceId}");
+
+#if UNITY_IOS && !UNITY_EDITOR
+            _readCharacteristic(deviceId, characteristicUUID);
+#else
+            if (!IsDeviceConnected(deviceId))
+            {
+                var errorResult = new CharacteristicReadResult(deviceId, characteristicUUID, error: "Device not connected");
+                OnCharacteristicReadError?.Invoke(errorResult);
+                return;
+            }
+
+            if (!IsGattReady(deviceId))
+            {
+                var errorResult = new CharacteristicReadResult(deviceId, characteristicUUID, error: "Characteristics not yet discovered for device");
+                OnCharacteristicReadError?.Invoke(errorResult);
+                return;
+            }
+
+            string hexData = GenerateSimulatedCharacteristicData(characteristicUUID, 1);
+            var result = new CharacteristicReadResult(deviceId, characteristicUUID, hexData);
+            OnCharacteristicReadSuccess?.Invoke(result);
+#endif
+        }
+
+        /// <summary>
         /// Subscribe to notifications from a BLE characteristic
         /// </summary>
         /// <param name="deviceId">The device ID</param>
@@ -532,6 +686,16 @@ namespace UnityBLE2IOS
             Debug.Log($"Simulated subscription to {characteristicUUID}");
             var result = new CharacteristicNotificationStateResult(deviceId, characteristicUUID, true);
             OnCharacteristicNotificationStateChanged?.Invoke(result);
+
+            // Start a coroutine that periodically emits fake characteristic values
+            string coroutineKey = $"{deviceId}_{characteristicUUID}";
+            if (_simulatedNotificationCoroutines.ContainsKey(coroutineKey))
+            {
+                StopCoroutine(_simulatedNotificationCoroutines[coroutineKey]);
+                _simulatedNotificationCoroutines.Remove(coroutineKey);
+            }
+            _simulatedNotificationCoroutines[coroutineKey] = StartCoroutine(
+                SimulateCharacteristicNotifications(deviceId, characteristicUUID));
 #endif
         }
 
@@ -573,6 +737,14 @@ namespace UnityBLE2IOS
                 return;
             }
 
+            // Stop the simulated notification coroutine if running
+            string coroutineKey = $"{deviceId}_{characteristicUUID}";
+            if (_simulatedNotificationCoroutines.TryGetValue(coroutineKey, out Coroutine runningCoroutine))
+            {
+                StopCoroutine(runningCoroutine);
+                _simulatedNotificationCoroutines.Remove(coroutineKey);
+            }
+
             // Simulate unsubscription in editor
             Debug.Log($"Simulated unsubscription from {characteristicUUID}");
             var result = new CharacteristicNotificationStateResult(deviceId, characteristicUUID, false);
@@ -594,7 +766,7 @@ namespace UnityBLE2IOS
             }
             
 #if UNITY_IOS && !UNITY_EDITOR
-            string characteristicsJson = _getDeviceCharacteristics(deviceId);
+            string characteristicsJson = PtrToString(_getDeviceCharacteristics(deviceId));
             if (!string.IsNullOrEmpty(characteristicsJson))
             {
                 try
@@ -634,7 +806,7 @@ namespace UnityBLE2IOS
             }
             
 #if UNITY_IOS && !UNITY_EDITOR
-            string servicesJson = _getDeviceServices(deviceId);
+            string servicesJson = PtrToString(_getDeviceServices(deviceId));
             if (!string.IsNullOrEmpty(servicesJson))
             {
                 try
@@ -681,7 +853,7 @@ namespace UnityBLE2IOS
             }
             
 #if UNITY_IOS && !UNITY_EDITOR
-            string characteristicsJson = _getServiceCharacteristics(deviceId, serviceUUID);
+            string characteristicsJson = PtrToString(_getServiceCharacteristics(deviceId, serviceUUID));
             if (!string.IsNullOrEmpty(characteristicsJson))
             {
                 try
@@ -731,6 +903,139 @@ namespace UnityBLE2IOS
             Debug.Log($"Initiated disconnection for {deviceIds.Count} devices");
         }
 
+        private void BeginConnectionAttempt(string deviceId)
+        {
+            StopRetryCoroutine(deviceId);
+            StopConnectionTimeout(deviceId);
+            _connectionAttemptsInProgress.Add(deviceId);
+
+#if UNITY_IOS && !UNITY_EDITOR
+            _connectToDevice(deviceId);
+            StartConnectionTimeout(deviceId);
+#else
+            // Simulate successful connection and GATT discovery in editor
+            BluetoothDevice connectedDevice = discoveredDevices.Find(d => d.deviceId == deviceId) ??
+                                              new BluetoothDevice(deviceId, "Simulated Device");
+            connectedDevices[deviceId] = connectedDevice;
+            gattReadyDevices.Remove(deviceId);
+            _connectionAttemptsInProgress.Remove(deviceId);
+            _retryCounters.Remove(deviceId);
+            _intentionalDisconnects.Remove(deviceId);
+            _reconnectAfterDisconnectDevices.Remove(deviceId);
+            OnDeviceConnected?.Invoke(deviceId);
+            gattReadyDevices.Add(deviceId);
+            OnServicesDiscovered?.Invoke(deviceId);
+#endif
+        }
+
+        private void StartConnectionTimeout(string deviceId)
+        {
+            float timeoutSeconds = Mathf.Max(0f, _connectionTimeout);
+            if (timeoutSeconds <= 0f)
+            {
+                return;
+            }
+
+            StopConnectionTimeout(deviceId);
+            _timeoutCoroutines[deviceId] = StartCoroutine(ConnectionTimeoutCoroutine(deviceId, timeoutSeconds));
+        }
+
+        private void StopConnectionTimeout(string deviceId)
+        {
+            if (_timeoutCoroutines.TryGetValue(deviceId, out Coroutine timeoutCoroutine))
+            {
+                StopCoroutine(timeoutCoroutine);
+                _timeoutCoroutines.Remove(deviceId);
+            }
+        }
+
+        private void StopRetryCoroutine(string deviceId)
+        {
+            if (_retryCoroutines.TryGetValue(deviceId, out Coroutine retryCoroutine))
+            {
+                StopCoroutine(retryCoroutine);
+                _retryCoroutines.Remove(deviceId);
+            }
+        }
+
+        private void HandleConnectionFailure(string deviceId, string error)
+        {
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                Debug.LogError($"Connection failed without a valid device ID: {error}");
+                OnConnectionFailed?.Invoke(deviceId, error);
+                return;
+            }
+
+            StopConnectionTimeout(deviceId);
+            _connectionAttemptsInProgress.Remove(deviceId);
+
+            if (_intentionalDisconnects.Contains(deviceId))
+            {
+                Debug.Log($"Ignoring connection failure for intentionally disconnected device {deviceId}");
+                return;
+            }
+
+            int maxRetries = Mathf.Max(0, _maxRetries);
+            int currentRetryCount = GetRetryCount(deviceId);
+            if (maxRetries == 0 || currentRetryCount >= maxRetries)
+            {
+                StopRetryCoroutine(deviceId);
+                _retryCounters.Remove(deviceId);
+
+                bool notifyDisconnected = _reconnectAfterDisconnectDevices.Remove(deviceId);
+                OnConnectionFailed?.Invoke(deviceId, error);
+                if (notifyDisconnected)
+                {
+                    OnDeviceDisconnected?.Invoke(deviceId);
+                }
+                return;
+            }
+
+            int nextRetryCount = currentRetryCount + 1;
+            _retryCounters[deviceId] = nextRetryCount;
+            StopRetryCoroutine(deviceId);
+
+            float retryDelaySeconds = Mathf.Max(0f, _retryDelay);
+            Debug.LogWarning(
+                $"Connection issue for device {deviceId}: {error}. Retrying {nextRetryCount}/{maxRetries} in {retryDelaySeconds:0.##} seconds.");
+            _retryCoroutines[deviceId] = StartCoroutine(RetryConnectionCoroutine(deviceId));
+        }
+
+        private System.Collections.IEnumerator ConnectionTimeoutCoroutine(string deviceId, float timeoutSeconds)
+        {
+            yield return new WaitForSeconds(timeoutSeconds);
+            _timeoutCoroutines.Remove(deviceId);
+
+            if (!_connectionAttemptsInProgress.Contains(deviceId) || connectedDevices.ContainsKey(deviceId))
+            {
+                yield break;
+            }
+
+            Debug.LogWarning($"Connection to device {deviceId} timed out after {timeoutSeconds:0.##} seconds");
+            _connectionAttemptsInProgress.Remove(deviceId);
+            HandleConnectionFailure(deviceId, "Connection timed out");
+        }
+
+        private System.Collections.IEnumerator RetryConnectionCoroutine(string deviceId)
+        {
+            float retryDelaySeconds = Mathf.Max(0f, _retryDelay);
+            if (retryDelaySeconds > 0f)
+            {
+                yield return new WaitForSeconds(retryDelaySeconds);
+            }
+
+            _retryCoroutines.Remove(deviceId);
+
+            if (_intentionalDisconnects.Contains(deviceId))
+            {
+                yield break;
+            }
+
+            Debug.Log($"Retrying connection to device: {deviceId}");
+            BeginConnectionAttempt(deviceId);
+        }
+
         // Called from native iOS code
         public void OnBluetoothStateChangedNative(string enabled)
         {
@@ -752,6 +1057,7 @@ namespace UnityBLE2IOS
                 {
                     // Update existing device with new info (RSSI might have changed)
                     existingDevice.rssi = device.rssi;
+                    existingDevice.isConnectable = device.isConnectable;
                     existingDevice.serviceUUIDs = device.serviceUUIDs;
                     existingDevice.manufacturerData = device.manufacturerData;
                     existingDevice.localName = device.localName;
@@ -777,6 +1083,11 @@ namespace UnityBLE2IOS
         public void OnDeviceConnectedNative(string deviceId)
         {
             Debug.Log($"Device connected: {deviceId}");
+            StopConnectionTimeout(deviceId);
+            _connectionAttemptsInProgress.Remove(deviceId);
+            _retryCounters.Remove(deviceId);
+            _intentionalDisconnects.Remove(deviceId);
+            _reconnectAfterDisconnectDevices.Remove(deviceId);
             gattReadyDevices.Remove(deviceId);
             
             // Find the device in discovered devices to store its full info
@@ -839,15 +1150,34 @@ namespace UnityBLE2IOS
         {
             Debug.Log($"Device disconnected: {deviceId}");
             gattReadyDevices.Remove(deviceId);
+            StopConnectionTimeout(deviceId);
+            _connectionAttemptsInProgress.Remove(deviceId);
             
             // Remove the device from connected devices
-            if (connectedDevices.ContainsKey(deviceId))
+            bool wasConnected = connectedDevices.Remove(deviceId);
+            if (wasConnected)
             {
-                connectedDevices.Remove(deviceId);
                 Debug.Log($"Removed device {deviceId} from connected devices list");
             }
-            
-            OnDeviceDisconnected?.Invoke(deviceId);
+
+            bool wasIntentional = _intentionalDisconnects.Remove(deviceId);
+            if (wasIntentional)
+            {
+                StopRetryCoroutine(deviceId);
+                _retryCounters.Remove(deviceId);
+                _reconnectAfterDisconnectDevices.Remove(deviceId);
+                OnDeviceDisconnected?.Invoke(deviceId);
+                return;
+            }
+
+            if (!wasConnected)
+            {
+                Debug.Log($"Ignoring disconnect callback for untracked device {deviceId}");
+                return;
+            }
+
+            _reconnectAfterDisconnectDevices.Add(deviceId);
+            HandleConnectionFailure(deviceId, "Unexpected disconnection");
         }
 
         // Called from native iOS code
@@ -857,8 +1187,22 @@ namespace UnityBLE2IOS
             string deviceId = parts.Length > 0 ? parts[0] : "";
             string error = parts.Length > 1 ? parts[1] : "Unknown error";
             gattReadyDevices.Remove(deviceId);
+
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                Debug.LogError($"Connection failed without a valid device ID: {error}");
+                OnConnectionFailed?.Invoke(deviceId, error);
+                return;
+            }
+
+            if (!_connectionAttemptsInProgress.Contains(deviceId))
+            {
+                Debug.LogWarning($"Ignoring stale connection failure for device {deviceId}: {error}");
+                return;
+            }
+
             Debug.LogError($"Connection failed for device {deviceId}: {error}");
-            OnConnectionFailed?.Invoke(deviceId, error);
+            HandleConnectionFailure(deviceId, error);
         }
 
         // Called from native iOS code
@@ -915,6 +1259,36 @@ namespace UnityBLE2IOS
         }
 
         // Called from native iOS code
+        public void OnCharacteristicReadSuccessNative(string resultJson)
+        {
+            try
+            {
+                CharacteristicReadResult result = JsonUtility.FromJson<CharacteristicReadResult>(resultJson);
+                Debug.Log($"Successfully read characteristic {result.characteristicUUID} on device {result.deviceId}: {result.data}");
+                OnCharacteristicReadSuccess?.Invoke(result);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Error parsing characteristic read success: {e.Message}\nResult: {resultJson}");
+            }
+        }
+
+        // Called from native iOS code
+        public void OnCharacteristicReadErrorNative(string resultJson)
+        {
+            try
+            {
+                CharacteristicReadResult result = JsonUtility.FromJson<CharacteristicReadResult>(resultJson);
+                Debug.LogError($"Failed to read characteristic {result.characteristicUUID} on device {result.deviceId}: {result.error}");
+                OnCharacteristicReadError?.Invoke(result);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Error parsing characteristic read error: {e.Message}\nResult: {resultJson}");
+            }
+        }
+
+        // Called from native iOS code
         public void OnCharacteristicNotificationStateChangedNative(string resultJson)
         {
             try
@@ -943,6 +1317,7 @@ namespace UnityBLE2IOS
                     deviceId = "simulated-device-001",
                     name = "Fitness Tracker",
                     rssi = -45,
+                    isConnectable = true,
                     serviceUUIDs = new string[] { "180D", "180F" }, // Heart Rate & Battery Service
                     manufacturerData = "4c001005071c123456",
                     localName = "FitTracker Pro",
@@ -953,6 +1328,7 @@ namespace UnityBLE2IOS
                     deviceId = "simulated-device-002", 
                     name = "Smart Watch",
                     rssi = -62,
+                    isConnectable = true,
                     serviceUUIDs = new string[] { "1800", "1801", "180F" },
                     manufacturerData = "4c00100507ab654321",
                     localName = "SmartWatch X1",
@@ -963,6 +1339,7 @@ namespace UnityBLE2IOS
                     deviceId = "simulated-device-003",
                     name = "Temperature Sensor",
                     rssi = -38,
+                    isConnectable = true,
                     serviceUUIDs = new string[] { "181A" }, // Environmental Sensing
                     manufacturerData = "",
                     localName = "TempSense v2",
@@ -973,6 +1350,7 @@ namespace UnityBLE2IOS
                     deviceId = "vernier-gdx-tmp-001",
                     name = "GDX-TMP 071000ABC",
                     rssi = -52,
+                    isConnectable = true,
                     serviceUUIDs = new string[] { "f4bf14a6-c7d5-4b6d-8aa8-df1a7c83adcb", "b41e6675-a329-40e0-aa01-44d2f444babe", "180F" }, // Vernier Command & Response Services, Battery
                     manufacturerData = "5700010203040506",
                     localName = "GDX-TMP 071000ABC",
@@ -983,6 +1361,7 @@ namespace UnityBLE2IOS
                     deviceId = "vernier-gdx-for-002",
                     name = "GDX-FOR 071000DEF",
                     rssi = -48,
+                    isConnectable = true,
                     serviceUUIDs = new string[] { "f4bf14a6-c7d5-4b6d-8aa8-df1a7c83adcb", "b41e6675-a329-40e0-aa01-44d2f444babe", "180A" }, // Vernier Command & Response Services, Device Info
                     manufacturerData = "570001abcdef1234",
                     localName = "GDX-FOR 071000DEF",
@@ -1002,6 +1381,81 @@ namespace UnityBLE2IOS
                 discoveredDevices.Add(device);
                 OnDeviceDiscovered?.Invoke(device);
                 Debug.Log($"Simulated device discovered: {device.name} ({device.deviceId})");
+            }
+        }
+
+        private void StopSimulatedNotificationsForDevice(string deviceId)
+        {
+            List<string> coroutineKeys = _simulatedNotificationCoroutines.Keys
+                .Where(key => key.StartsWith(deviceId + "_", StringComparison.Ordinal))
+                .ToList();
+
+            foreach (string coroutineKey in coroutineKeys)
+            {
+                StopCoroutine(_simulatedNotificationCoroutines[coroutineKey]);
+                _simulatedNotificationCoroutines.Remove(coroutineKey);
+            }
+        }
+#endif
+
+#if UNITY_EDITOR
+        /// <summary>
+        /// Coroutine that periodically emits simulated characteristic value notifications in the editor.
+        /// Produces realistic fake data based on well-known characteristic UUIDs.
+        /// </summary>
+        private System.Collections.IEnumerator SimulateCharacteristicNotifications(string deviceId, string characteristicUUID)
+        {
+            float interval = 1.5f; // seconds between simulated notifications
+            int counter = 0;
+
+            while (true)
+            {
+                yield return new WaitForSeconds(interval);
+                counter++;
+
+                string hexData = GenerateSimulatedCharacteristicData(characteristicUUID, counter);
+                var message = new CharacteristicValueMessage(deviceId, characteristicUUID, hexData);
+                Debug.Log($"[Editor Sim] Characteristic notification {characteristicUUID}: {hexData}");
+                OnCharacteristicValueReceived?.Invoke(message);
+            }
+        }
+
+        /// <summary>
+        /// Generate realistic simulated hex data based on well-known BLE characteristic UUIDs.
+        /// </summary>
+        private string GenerateSimulatedCharacteristicData(string characteristicUUID, int counter)
+        {
+            switch (characteristicUUID.ToUpperInvariant())
+            {
+                case "2A19": // Battery Level (0-100)
+                    int battery = Mathf.Clamp(85 - (counter % 20), 0, 100);
+                    return battery.ToString("x2");
+
+                case "2A00": // Device Name (UTF-8 text)
+                    byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes("SimDevice");
+                    return System.BitConverter.ToString(nameBytes).Replace("-", "").ToLower();
+
+                case "2A01": // Appearance (uint16 LE)
+                    return "0000"; // Unknown appearance
+
+                case "2A37": // Heart Rate Measurement
+                    int hr = 60 + (int)(20f * Mathf.Sin(counter * 0.3f));
+                    return $"00{hr:x2}";
+
+                case "2A1C": // Temperature Measurement
+                    int tempCenti = 3650 + (int)(50f * Mathf.Sin(counter * 0.2f)); // ~36.5°C ± 0.5
+                    return $"00{(tempCenti & 0xFF):x2}{((tempCenti >> 8) & 0xFF):x2}0000";
+
+                case "2A6E": // Temperature (int16, 0.01 °C resolution)
+                    int tempRaw = 2200 + (int)(100f * Mathf.Sin(counter * 0.15f)); // ~22.0°C ± 1.0
+                    return $"{(tempRaw & 0xFF):x2}{((tempRaw >> 8) & 0xFF):x2}";
+
+                default: // Generic: incrementing counter bytes
+                    byte b0 = (byte)(counter & 0xFF);
+                    byte b1 = (byte)((counter >> 8) & 0xFF);
+                    byte b2 = (byte)UnityEngine.Random.Range(0, 256);
+                    byte b3 = (byte)UnityEngine.Random.Range(0, 256);
+                    return $"{b0:x2}{b1:x2}{b2:x2}{b3:x2}";
             }
         }
 #endif
