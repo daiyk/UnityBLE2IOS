@@ -32,6 +32,11 @@
       "displayName": "Unity BLE Sample",
       "description": "Complete BLE sample scene with comprehensive UI, device list management, debug console, and connection handling.",
       "path": "Samples~/UnityBLESample"
+    },
+    {
+      "displayName": "Unity BLE Connect Sample",
+      "description": "Connect-focused BLE sample scene with scanning, device selection, service inspection, characteristic selection, notification subscription, and debug logging.",
+      "path": "Samples~/UnityBLEConnectSample"
     }
   ]
 }
